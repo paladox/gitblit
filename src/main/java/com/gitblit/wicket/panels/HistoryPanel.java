@@ -109,14 +109,14 @@ public class HistoryPanel extends BasePanel {
 					tw.setFilter(PathFilterGroup.createFromStrings(Collections.singleton(path)));
 					while (tw.next()) {
 						if (tw.getPathString().equals(path)) {
-							matchingPath = new PathChangeModel(tw.getPathString(), tw.getPathString(), 0, tw
+							matchingPath = new PathChangeModel(tw.getPathString(), tw.getPathString(), null, 0, tw
 								.getRawMode(0), tw.getObjectId(0).getName(), commit.getId().getName(),
 								ChangeType.MODIFY);
 						}
 					}
 				} catch (Exception e) {
 				} finally {
-					tw.release();
+					tw.close();
 				}
 			}
 		}
@@ -160,7 +160,7 @@ public class HistoryPanel extends BasePanel {
 			@Override
 			public void populateItem(final Item<RevCommit> item) {
 				final RevCommit entry = item.getModelObject();
-				final Date date = JGitUtils.getCommitDate(entry);
+				final Date date = JGitUtils.getAuthorDate(entry);
 
 				item.add(WicketUtils.createDateLabel("commitDate", date, getTimeZone(), getTimeUtils()));
 

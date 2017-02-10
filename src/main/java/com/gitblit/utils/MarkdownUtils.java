@@ -16,6 +16,7 @@
 package com.gitblit.utils;
 
 import static org.pegdown.Extensions.ALL;
+import static org.pegdown.Extensions.ANCHORLINKS;
 import static org.pegdown.Extensions.SMARTYPANTS;
 
 import java.io.IOException;
@@ -29,6 +30,7 @@ import org.pegdown.ParsingTimeoutException;
 import org.pegdown.PegDownProcessor;
 import org.pegdown.ast.RootNode;
 
+import com.gitblit.Constants;
 import com.gitblit.IStoredSettings;
 import com.gitblit.Keys;
 import com.gitblit.wicket.MarkupProcessor.WorkaroundHtmlSerializer;
@@ -76,7 +78,7 @@ public class MarkdownUtils {
 	 */
 	public static String transformMarkdown(String markdown, LinkRenderer linkRenderer) {
 		try {
-			PegDownProcessor pd = new PegDownProcessor(ALL & ~SMARTYPANTS);
+			PegDownProcessor pd = new PegDownProcessor(ALL & ~SMARTYPANTS & ~ANCHORLINKS);
 			RootNode astRoot = pd.parseMarkdown(markdown.toCharArray());
 			return new WorkaroundHtmlSerializer(linkRenderer == null ? new LinkRenderer() : linkRenderer).toHtml(astRoot);
 		} catch (ParsingTimeoutException e) {
@@ -136,8 +138,8 @@ public class MarkdownUtils {
 		String canonicalUrl = settings.getString(Keys.web.canonicalUrl, "https://localhost:8443");
 
 		// emphasize and link mentions
-		String mentionReplacement = String.format(" **[@$1](%1s/user/$1)**", canonicalUrl);
-		text = text.replaceAll("\\s@([A-Za-z0-9-_]+)", mentionReplacement);
+		String mentionReplacement = String.format("**[@${user}](%1s/user/${user})**", canonicalUrl);
+		text = text.replaceAll(Constants.REGEX_TICKET_MENTION, mentionReplacement);
 
 		// link ticket refs
 		String ticketReplacement = MessageFormat.format("$1[#$2]({0}/tickets?r={1}&h=$2)$3", canonicalUrl, repositoryName);

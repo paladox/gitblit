@@ -104,7 +104,7 @@ public class UserPage extends RootPage {
 		if (isMyProfile) {
 			addPreferences(user);
 
-			if (app().gitblit().isServingSSH()) {
+			if (app().services().isServingSSH()) {
 				// show the SSH key management tab
 				addSshKeys(user);
 			} else {
@@ -166,12 +166,9 @@ public class UserPage extends RootPage {
 
 		navLinks.add(menu);
 	}
-
-	private void addPreferences(UserModel user) {
-		// add preferences
-		Form<Void> prefs = new Form<Void>("prefsForm");
-
-		List<Language> languages = Arrays.asList(
+	
+	public static List<Language> getLanguages(){
+		return  Arrays.asList(
 				new Language("Deutsch","de"),
 				new Language("English","en"),
 				new Language("Español", "es"),
@@ -183,7 +180,15 @@ public class UserPage extends RootPage {
 				new Language("Norsk", "no"),
 				new Language("Język Polski", "pl"),
 				new Language("Português", "pt_BR"),
-				new Language("中文", "zh_CN"));
+				new Language("簡體中文", "zh_CN"),
+				new Language("正體中文", "zh_TW"));
+	}
+	
+	private void addPreferences(UserModel user) {
+		// add preferences
+		Form<Void> prefs = new Form<Void>("prefsForm");
+
+		List<Language> languages = getLanguages();
 
 		Locale locale = user.getPreferences().getLocale();
 		if (locale == null) {
@@ -248,14 +253,16 @@ public class UserPage extends RootPage {
 				emailMeOnMyTicketChanges).setVisible(app().notifier().isSendingMail()));
 
 		List<Transport> availableTransports = new ArrayList<>();
-		if (app().gitblit().isServingSSH()) {
+		if (app().services().isServingSSH()) {
 			availableTransports.add(Transport.SSH);
 		}
-		if (app().gitblit().isServingHTTP()) {
-			availableTransports.add(Transport.HTTPS);
+		if (app().services().isServingHTTP()) {
 			availableTransports.add(Transport.HTTP);
 		}
-		if (app().gitblit().isServingGIT()) {
+		if (app().services().isServingHTTPS()) {
+			availableTransports.add(Transport.HTTPS);
+		}
+		if (app().services().isServingGIT()) {
 			availableTransports.add(Transport.GIT);
 		}
 
@@ -311,23 +318,5 @@ public class UserPage extends RootPage {
 		// add the SSH keys tab
 		add(new Fragment("sshKeysLink", "sshKeysLinkFragment", this).setRenderBodyOnly(true));
 		add(keysTab.setRenderBodyOnly(true));
-	}
-
-	private class Language implements Serializable {
-
-		private static final long serialVersionUID = 1L;
-
-		final String name;
-		final String code;
-
-		public Language(String name, String code) {
-			this.name = name;
-			this.code = code;
-		}
-
-		@Override
-		public String toString() {
-			return name + " (" + code +")";
-		}
 	}
 }

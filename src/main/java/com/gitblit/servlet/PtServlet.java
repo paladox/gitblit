@@ -15,13 +15,17 @@
  */
 package com.gitblit.servlet;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 import javax.servlet.ServletException;
+import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
@@ -31,13 +35,9 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.apache.commons.compress.compressors.CompressorOutputStream;
 import org.apache.commons.compress.compressors.CompressorStreamFactory;
-import org.apache.wicket.util.io.ByteArrayOutputStream;
 import org.eclipse.jgit.lib.FileMode;
 
-import com.gitblit.dagger.DaggerServlet;
 import com.gitblit.manager.IRuntimeManager;
-
-import dagger.ObjectGraph;
 
 /**
  * Handles requests for the Barnum pt (patchset tool).
@@ -47,7 +47,8 @@ import dagger.ObjectGraph;
  * @author James Moger
  *
  */
-public class PtServlet extends DaggerServlet {
+@Singleton
+public class PtServlet extends HttpServlet {
 
 	private static final long serialVersionUID = 1L;
 
@@ -55,9 +56,9 @@ public class PtServlet extends DaggerServlet {
 
 	private IRuntimeManager runtimeManager;
 
-	@Override
-	protected void inject(ObjectGraph dagger) {
-		this.runtimeManager = dagger.get(IRuntimeManager.class);
+	@Inject
+	public PtServlet(IRuntimeManager runtimeManager) {
+		this.runtimeManager = runtimeManager;
 	}
 
 	@Override

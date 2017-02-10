@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 import org.apache.wicket.PageParameters;
 import org.apache.wicket.ajax.AjaxRequestTarget;
@@ -35,6 +37,7 @@ import org.eclipse.jgit.lib.Repository;
 
 import com.gitblit.Constants;
 import com.gitblit.Constants.AccessPermission;
+import com.gitblit.Constants.AuthorizationControl;
 import com.gitblit.models.RegistrantAccessPermission;
 import com.gitblit.models.TicketModel;
 import com.gitblit.models.TicketModel.Change;
@@ -73,6 +76,10 @@ public class NewTicketPage extends RepositoryPage {
 
 	private Label descriptionPreview;
 
+	private IModel<TicketModel.Priority> priorityModel;
+
+	private IModel<TicketModel.Severity> severityModel;
+
 	public NewTicketPage(PageParameters params) {
 		super(params);
 
@@ -92,6 +99,8 @@ public class NewTicketPage extends RepositoryPage {
 		mergeToModel = Model.of(Repository.shortenRefName(getRepositoryModel().mergeTo));
 		responsibleModel = Model.of();
 		milestoneModel = Model.of();
+		severityModel = Model.of(TicketModel.Severity.defaultSeverity);
+		priorityModel = Model.of(TicketModel.Priority.defaultPriority);
 
 		setStatelessHint(false);
 		setOutputMarkupId(true);
@@ -102,8 +111,9 @@ public class NewTicketPage extends RepositoryPage {
 		form.add(new DropDownChoice<TicketModel.Type>("type", typeModel, Arrays.asList(TicketModel.Type.choices())));
 		form.add(new TextField<String>("title", titleModel));
 		form.add(new TextField<String>("topic", topicModel));
+		form.add(new DropDownChoice<TicketModel.Severity>("severity", severityModel, Arrays.asList(TicketModel.Severity.choices())));
 
-		final IModel<String> markdownPreviewModel = new Model<String>();
+		final IModel<String> markdownPreviewModel = Model.of();
 		descriptionPreview = new Label("descriptionPreview", markdownPreviewModel);
 		descriptionPreview.setEscapeModelStrings(false);
 		descriptionPreview.setOutputMarkupId(true);
@@ -115,23 +125,27 @@ public class NewTicketPage extends RepositoryPage {
 
 		if (currentUser.canAdmin(null, getRepositoryModel())) {
 			// responsible
-			List<TicketResponsible> responsibles = new ArrayList<TicketResponsible>();
-			if (UserModel.ANONYMOUS.canPush(getRepositoryModel())) {
-				// anonymous push allowed
-				for (UserModel user : app().users().getAllUsers()) {
-					if (!user.disabled) {
-						responsibles.add(new TicketResponsible(user));
+			Set<String> userlist = new TreeSet<String>();
+
+			if (UserModel.ANONYMOUS.canPush(getRepositoryModel())
+					|| AuthorizationControl.AUTHENTICATED == getRepositoryModel().authorizationControl) {
+				// 	authorization is ANONYMOUS or AUTHENTICATED (i.e. all users can be set responsible)
+				userlist.addAll(app().users().getAllUsernames());
+			} else {
+				// authorization is by NAMED users (users with PUSH permission can be set responsible)
+				for (RegistrantAccessPermission rp : app().repositories().getUserAccessPermissions(getRepositoryModel())) {
+					if (rp.permission.atLeast(AccessPermission.PUSH)) {
+						userlist.add(rp.registrant);
 					}
 				}
-			} else {
-				// authenticated push
-				for (RegistrantAccessPermission rp : app().repositories().getUserAccessPermissions(getRepositoryModel())) {
-					if (rp.permission.atLeast(AccessPermission.PUSH) && !rp.isTeam()) {
-						UserModel user = app().users().getUserModel(rp.registrant);
-						if (user != null && !user.disabled) {
-							responsibles.add(new TicketResponsible(user));
-						}
-					}
+			}
+
+			List<TicketResponsible> responsibles = new ArrayList<TicketResponsible>();
+			for (String username : userlist) {
+				UserModel user = app().users().getUserModel(username);
+				if (user != null && !user.disabled) {
+					TicketResponsible responsible = new TicketResponsible(user);
+					responsibles.add(responsible);
 				}
 			}
 			Collections.sort(responsibles);
@@ -144,6 +158,11 @@ public class NewTicketPage extends RepositoryPage {
 			Fragment milestone = new Fragment("milestone", "milestoneFragment", this);
 			milestone.add(new DropDownChoice<TicketMilestone>("milestone", milestoneModel, milestones));
 			form.add(milestone.setVisible(!milestones.isEmpty()));
+
+			// priority
+			Fragment priority = new Fragment("priority", "priorityFragment", this);
+			priority.add(new DropDownChoice<TicketModel.Priority>("priority", priorityModel, Arrays.asList(TicketModel.Priority.choices())));
+			form.add(priority);
 
 			// integration branch
 			List<String> branches = new ArrayList<String>();
@@ -164,6 +183,7 @@ public class NewTicketPage extends RepositoryPage {
 			form.add(new Label("responsible").setVisible(false));
 			form.add(new Label("milestone").setVisible(false));
 			form.add(new Label("mergeto").setVisible(false));
+			form.add(new Label("priority").setVisible(false));
 		}
 
 		form.add(new AjaxButton("create") {
@@ -205,6 +225,20 @@ public class NewTicketPage extends RepositoryPage {
 					change.setField(Field.milestone, milestone.name);
 				}
 
+				// severity
+				TicketModel.Severity severity = TicketModel.Severity.defaultSeverity;
+				if (severityModel.getObject() != null) {
+					severity = severityModel.getObject();
+				}
+				change.setField(Field.severity, severity);
+
+				// priority
+				TicketModel.Priority priority = TicketModel.Priority.defaultPriority;
+				if (priorityModel.getObject() != null) {
+					priority = priorityModel.getObject();
+				}
+				change.setField(Field.priority, priority);
+
 				// integration branch
 				String mergeTo = mergeToModel.getObject();
 				if (!StringUtils.isEmpty(mergeTo)) {
@@ -215,7 +249,8 @@ public class NewTicketPage extends RepositoryPage {
 				if (ticket != null) {
 					TicketNotifier notifier = app().tickets().createNotifier();
 					notifier.sendMailing(ticket);
-					setResponsePage(TicketsPage.class, WicketUtils.newObjectParameter(getRepositoryModel().name, "" + ticket.number));
+
+					redirectTo(TicketsPage.class, WicketUtils.newObjectParameter(getRepositoryModel().name, "" + ticket.number));
 				} else {
 					// TODO error
 				}

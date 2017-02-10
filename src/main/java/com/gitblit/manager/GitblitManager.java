@@ -21,6 +21,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.lang.reflect.Type;
 import java.text.MessageFormat;
 import java.util.ArrayList;
@@ -49,15 +50,16 @@ import ro.fortsoft.pf4j.Version;
 
 import com.gitblit.Constants;
 import com.gitblit.Constants.AccessPermission;
-import com.gitblit.Constants.AccessRestrictionType;
 import com.gitblit.Constants.FederationRequest;
 import com.gitblit.Constants.FederationToken;
+import com.gitblit.Constants.Role;
 import com.gitblit.GitBlitException;
 import com.gitblit.IStoredSettings;
-import com.gitblit.Keys;
+import com.gitblit.extensions.RepositoryLifeCycleListener;
 import com.gitblit.models.FederationModel;
 import com.gitblit.models.FederationProposal;
 import com.gitblit.models.FederationSet;
+import com.gitblit.models.FilestoreModel;
 import com.gitblit.models.ForkModel;
 import com.gitblit.models.GitClientApplication;
 import com.gitblit.models.Mailing;
@@ -68,7 +70,6 @@ import com.gitblit.models.PluginRegistry.PluginRelease;
 import com.gitblit.models.ProjectModel;
 import com.gitblit.models.RegistrantAccessPermission;
 import com.gitblit.models.RepositoryModel;
-import com.gitblit.models.RepositoryUrl;
 import com.gitblit.models.SearchResult;
 import com.gitblit.models.ServerSettings;
 import com.gitblit.models.ServerStatus;
@@ -79,14 +80,18 @@ import com.gitblit.tickets.ITicketService;
 import com.gitblit.transport.ssh.IPublicKeyManager;
 import com.gitblit.transport.ssh.SshKey;
 import com.gitblit.utils.ArrayUtils;
-import com.gitblit.utils.HttpUtils;
 import com.gitblit.utils.JsonUtils;
 import com.gitblit.utils.ObjectCache;
 import com.gitblit.utils.StringUtils;
+import com.gitblit.utils.XssFilter;
 import com.google.gson.Gson;
 import com.google.gson.JsonIOException;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
+import com.google.inject.Inject;
+import com.google.inject.Injector;
+import com.google.inject.Provider;
+import com.google.inject.Singleton;
 
 /**
  * GitblitManager is an aggregate interface delegate.  It implements all the manager
@@ -100,11 +105,16 @@ import com.google.gson.reflect.TypeToken;
  * @author James Moger
  *
  */
+@Singleton
 public class GitblitManager implements IGitblit {
 
 	protected final Logger logger = LoggerFactory.getLogger(getClass());
 
 	protected final ObjectCache<Collection<GitClientApplication>> clientApplications = new ObjectCache<Collection<GitClientApplication>>();
+
+	protected final Provider<IPublicKeyManager> publicKeyManagerProvider;
+
+	protected final Provider<ITicketService> ticketServiceProvider;
 
 	protected final IStoredSettings settings;
 
@@ -118,24 +128,30 @@ public class GitblitManager implements IGitblit {
 
 	protected final IAuthenticationManager authenticationManager;
 
-	protected final IPublicKeyManager publicKeyManager;
-
 	protected final IRepositoryManager repositoryManager;
 
 	protected final IProjectManager projectManager;
 
 	protected final IFederationManager federationManager;
 
+	protected final IFilestoreManager filestoreManager;
+
+	@Inject
 	public GitblitManager(
+			Provider<IPublicKeyManager> publicKeyManagerProvider,
+			Provider<ITicketService> ticketServiceProvider,
 			IRuntimeManager runtimeManager,
 			IPluginManager pluginManager,
 			INotificationManager notificationManager,
 			IUserManager userManager,
 			IAuthenticationManager authenticationManager,
-			IPublicKeyManager publicKeyManager,
 			IRepositoryManager repositoryManager,
 			IProjectManager projectManager,
-			IFederationManager federationManager) {
+			IFederationManager federationManager,
+			IFilestoreManager filestoreManager) {
+
+		this.publicKeyManagerProvider = publicKeyManagerProvider;
+		this.ticketServiceProvider = ticketServiceProvider;
 
 		this.settings = runtimeManager.getSettings();
 		this.runtimeManager = runtimeManager;
@@ -143,10 +159,10 @@ public class GitblitManager implements IGitblit {
 		this.notificationManager = notificationManager;
 		this.userManager = userManager;
 		this.authenticationManager = authenticationManager;
-		this.publicKeyManager = publicKeyManager;
 		this.repositoryManager = repositoryManager;
 		this.projectManager = projectManager;
 		this.federationManager = federationManager;
+		this.filestoreManager = filestoreManager;
 	}
 
 	@Override
@@ -216,6 +232,13 @@ public class GitblitManager implements IGitblit {
 		RepositoryModel cloneModel = repository.cloneAs(cloneName);
 		// owner has REWIND/RW+ permissions
 		cloneModel.addOwner(user.username);
+
+		// ensure initial access restriction of the fork
+		// is not lower than the source repository  (issue-495/ticket-167)
+		if (repository.accessRestriction.exceeds(cloneModel.accessRestriction)) {
+			cloneModel.accessRestriction = repository.accessRestriction;
+		}
+
 		repositoryManager.updateRepositoryModel(cloneName, cloneModel, false);
 
 		// add the owner of the source repository to the clone's access list
@@ -260,6 +283,16 @@ public class GitblitManager implements IGitblit {
 
 		// add this clone to the cached model
 		repositoryManager.addToCachedRepositoryList(cloneModel);
+
+		if (pluginManager != null) {
+			for (RepositoryLifeCycleListener listener : pluginManager.getExtensions(RepositoryLifeCycleListener.class)) {
+				try {
+					listener.onFork(repository, cloneModel);
+				} catch (Throwable t) {
+					logger.error(String.format("failed to call plugin onFork %s", repository.name), t);
+				}
+			}
+		}
 		return cloneModel;
 	}
 
@@ -350,66 +383,6 @@ public class GitblitManager implements IGitblit {
 	}
 
 	/**
-	 * Returns a list of repository URLs and the user access permission.
-	 *
-	 * @param request
-	 * @param user
-	 * @param repository
-	 * @return a list of repository urls
-	 */
-	@Override
-	public List<RepositoryUrl> getRepositoryUrls(HttpServletRequest request, UserModel user, RepositoryModel repository) {
-		if (user == null) {
-			user = UserModel.ANONYMOUS;
-		}
-		String username = StringUtils.encodeUsername(UserModel.ANONYMOUS.equals(user) ? "" : user.username);
-
-		List<RepositoryUrl> list = new ArrayList<RepositoryUrl>();
-		// http/https url
-		if (settings.getBoolean(Keys.git.enableGitServlet, true)) {
-			AccessPermission permission = user.getRepositoryPermission(repository).permission;
-			if (permission.exceeds(AccessPermission.NONE)) {
-				list.add(new RepositoryUrl(getRepositoryUrl(request, username, repository), permission));
-			}
-		}
-
-		// add all other urls
-		// {0} = repository
-		// {1} = username
-		for (String url : settings.getStrings(Keys.web.otherUrls)) {
-			if (url.contains("{1}")) {
-				// external url requires username, only add url IF we have one
-				if (!StringUtils.isEmpty(username)) {
-					list.add(new RepositoryUrl(MessageFormat.format(url, repository.name, username), null));
-				}
-			} else {
-				// external url does not require username
-				list.add(new RepositoryUrl(MessageFormat.format(url, repository.name), null));
-			}
-		}
-		return list;
-	}
-
-	protected String getRepositoryUrl(HttpServletRequest request, String username, RepositoryModel repository) {
-		String gitblitUrl = settings.getString(Keys.web.canonicalUrl, null);
-		if (StringUtils.isEmpty(gitblitUrl)) {
-			gitblitUrl = HttpUtils.getGitblitURL(request);
-		}
-		StringBuilder sb = new StringBuilder();
-		sb.append(gitblitUrl);
-		sb.append(Constants.R_PATH);
-		sb.append(repository.name);
-
-		// inject username into repository url if authentication is required
-		if (repository.accessRestriction.exceeds(AccessRestrictionType.NONE)
-				&& !StringUtils.isEmpty(username)) {
-			sb.insert(sb.indexOf("://") + 3, username + "@");
-		}
-		return sb.toString();
-	}
-
-
-	/**
 	 * Returns the list of custom client applications to be used for the
 	 * repository url panel;
 	 *
@@ -484,7 +457,7 @@ public class GitblitManager implements IGitblit {
 			// Read bundled Gitblit properties to extract setting descriptions.
 			// This copy is pristine and only used for populating the setting
 			// models map.
-			InputStream is = GitblitManager.class.getResourceAsStream("/reference.properties");
+			InputStream is = GitblitManager.class.getResourceAsStream("/defaults.properties");
 			BufferedReader propertiesReader = new BufferedReader(new InputStreamReader(is));
 			StringBuilder description = new StringBuilder();
 			SettingModel setting = new SettingModel();
@@ -529,24 +502,20 @@ public class GitblitManager implements IGitblit {
 			}
 			propertiesReader.close();
 		} catch (NullPointerException e) {
-			logger.error("Failed to find resource copy of gitblit.properties");
+			logger.error("Failed to find classpath resource 'defaults.properties'");
 		} catch (IOException e) {
-			logger.error("Failed to load resource copy of gitblit.properties");
+			logger.error("Failed to load classpath resource 'defaults.properties'");
 		}
 	}
 
-	/**
-	 * Throws an exception if trying to get a ticket service.
-	 *
-	 */
 	@Override
 	public ITicketService getTicketService() {
-		throw new RuntimeException("This class does not have a ticket service!");
+		return ticketServiceProvider.get();
 	}
 
 	@Override
 	public IPublicKeyManager getPublicKeyManager() {
-		return publicKeyManager;
+		return publicKeyManagerProvider.get();
 	}
 
 	/*
@@ -597,26 +566,6 @@ public class GitblitManager implements IGitblit {
 	}
 
 	@Override
-	public boolean isServingRepositories() {
-		return runtimeManager.isServingRepositories();
-	}
-
-	@Override
-	public boolean isServingHTTP() {
-		return runtimeManager.isServingHTTP();
-	}
-
-	@Override
-	public boolean isServingGIT() {
-		return runtimeManager.isServingGIT();
-	}
-
-	@Override
-	public boolean isServingSSH() {
-		return runtimeManager.isServingSSH();
-	}
-
-	@Override
 	public TimeZone getTimezone() {
 		return runtimeManager.getTimezone();
 	}
@@ -656,6 +605,16 @@ public class GitblitManager implements IGitblit {
 		return runtimeManager.getStatus();
 	}
 
+	@Override
+	public Injector getInjector() {
+		return runtimeManager.getInjector();
+	}
+
+	@Override
+	public XssFilter getXssFilter() {
+		return runtimeManager.getXssFilter();
+	}
+
 	/*
 	 * NOTIFICATION MANAGER
 	 */
@@ -690,8 +649,8 @@ public class GitblitManager implements IGitblit {
 	 */
 
 	@Override
-	public UserModel authenticate(String username, char[] password) {
-		return authenticationManager.authenticate(username, password);
+	public UserModel authenticate(String username, char[] password, String remoteIP) {
+		return authenticationManager.authenticate(username, password, remoteIP);
 	}
 
 	@Override
@@ -709,6 +668,11 @@ public class GitblitManager implements IGitblit {
 	}
 
 	@Override
+	public UserModel authenticate(String username) {
+		return authenticationManager.authenticate(username);
+	}
+
+	@Override
 	public UserModel authenticate(HttpServletRequest httpRequest, boolean requiresCertificate) {
 		UserModel user = authenticationManager.authenticate(httpRequest, requiresCertificate);
 		if (user == null) {
@@ -723,13 +687,25 @@ public class GitblitManager implements IGitblit {
 	}
 
 	@Override
+	@Deprecated
 	public void setCookie(HttpServletResponse response, UserModel user) {
 		authenticationManager.setCookie(response, user);
 	}
 
 	@Override
+	public void setCookie(HttpServletRequest request, HttpServletResponse response, UserModel user) {
+		authenticationManager.setCookie(request, response, user);
+	}
+
+	@Override
+	@Deprecated
 	public void logout(HttpServletResponse response, UserModel user) {
 		authenticationManager.logout(response, user);
+	}
+
+	@Override
+	public void logout(HttpServletRequest request, HttpServletResponse response, UserModel user) {
+		authenticationManager.logout(request, response, user);
 	}
 
 	@Override
@@ -757,6 +733,16 @@ public class GitblitManager implements IGitblit {
 		return authenticationManager.supportsTeamMembershipChanges(team);
 	}
 
+	@Override
+	public boolean supportsRoleChanges(UserModel user, Role role) {
+		return authenticationManager.supportsRoleChanges(user, role);
+	}
+
+	@Override
+	public boolean supportsRoleChanges(TeamModel team, Role role) {
+		return authenticationManager.supportsRoleChanges(team, role);
+	}
+
 	/*
 	 * USER MANAGER
 	 */
@@ -778,11 +764,6 @@ public class GitblitManager implements IGitblit {
 	@Override
 	public List<UserModel> getAllUsers() {
 		return userManager.getAllUsers();
-	}
-
-	@Override
-	public boolean deleteUser(String username) {
-		return userManager.deleteUser(username);
 	}
 
 	@Override
@@ -826,8 +807,22 @@ public class GitblitManager implements IGitblit {
 	}
 
 	@Override
+	public boolean deleteUser(String username) {
+		// delegate to deleteUserModel() to delete public ssh keys
+		UserModel user = userManager.getUserModel(username);
+		return deleteUserModel(user);
+	}
+
+	/**
+	 * Delete the user and all associated public ssh keys.
+	 */
+	@Override
 	public boolean deleteUserModel(UserModel model) {
-		return userManager.deleteUserModel(model);
+		boolean success = userManager.deleteUserModel(model);
+		if (success) {
+			getPublicKeyManager().removeAllKeys(model.username);
+		}
+		return success;
 	}
 
 	@Override
@@ -969,6 +964,11 @@ public class GitblitManager implements IGitblit {
 	}
 
 	@Override
+	public List<RepositoryModel> getRepositoryModels() {
+		return repositoryManager.getRepositoryModels();
+	}
+
+	@Override
 	public List<RepositoryModel> getRepositoryModels(UserModel user) {
 		return repositoryManager.getRepositoryModels(user);
 	}
@@ -1023,10 +1023,23 @@ public class GitblitManager implements IGitblit {
 		return repositoryManager.getRepositoryDefaultMetrics(model, repository);
 	}
 
+	/**
+	 * Detect renames and reindex as appropriate.
+	 */
 	@Override
 	public void updateRepositoryModel(String repositoryName, RepositoryModel repository,
 			boolean isCreate) throws GitBlitException {
+		RepositoryModel oldModel = null;
+		boolean isRename = !isCreate && !repositoryName.equalsIgnoreCase(repository.name);
+		if (isRename) {
+			oldModel = repositoryManager.getRepositoryModel(repositoryName);
+		}
+
 		repositoryManager.updateRepositoryModel(repositoryName, repository, isCreate);
+
+		if (isRename && ticketServiceProvider.get() != null) {
+			ticketServiceProvider.get().rename(oldModel, repository);
+		}
 	}
 
 	@Override
@@ -1039,14 +1052,23 @@ public class GitblitManager implements IGitblit {
 		return repositoryManager.canDelete(model);
 	}
 
+	/**
+	 * Delete the repository and all associated tickets.
+	 */
 	@Override
 	public boolean deleteRepositoryModel(RepositoryModel model) {
-		return repositoryManager.deleteRepositoryModel(model);
+		boolean success = repositoryManager.deleteRepositoryModel(model);
+		if (success && ticketServiceProvider.get() != null) {
+			ticketServiceProvider.get().deleteAll(model);
+		}
+		return success;
 	}
 
 	@Override
 	public boolean deleteRepository(String repositoryName) {
-		return repositoryManager.deleteRepository(repositoryName);
+		// delegate to deleteRepositoryModel() to destroy indexed tickets
+		RepositoryModel repository = repositoryManager.getRepositoryModel(repositoryName);
+		return deleteRepositoryModel(repository);
 	}
 
 	@Override
@@ -1223,6 +1245,70 @@ public class GitblitManager implements IGitblit {
 	}
 
 	/*
+	 * FILE STORAGE MANAGER
+	 */
+	
+	@Override
+	public boolean isValidOid(String oid) {
+		return filestoreManager.isValidOid(oid);
+	}
+	
+	@Override
+	public FilestoreModel.Status addObject(String oid, long size, UserModel user, RepositoryModel repo) {
+		return filestoreManager.addObject(oid, size, user, repo);
+	}
+	
+	@Override
+	public FilestoreModel getObject(String oid, UserModel user, RepositoryModel repo) {
+		return filestoreManager.getObject(oid, user, repo);
+	};
+	
+	@Override
+	public FilestoreModel.Status uploadBlob(String oid, long size, UserModel user, RepositoryModel repo, InputStream streamIn ) {
+		return filestoreManager.uploadBlob(oid, size, user, repo, streamIn);
+	}
+	
+	@Override
+	public FilestoreModel.Status downloadBlob(String oid, UserModel user, RepositoryModel repo, OutputStream streamOut ) {
+		return filestoreManager.downloadBlob(oid, user, repo, streamOut);
+	}
+	
+	@Override
+	public List<FilestoreModel> getAllObjects(UserModel user) {
+		return filestoreManager.getAllObjects(user);
+	}
+	
+	@Override
+	public File getStorageFolder() {
+		return filestoreManager.getStorageFolder();
+	}
+	
+	@Override
+	public File getStoragePath(String oid) {
+		return filestoreManager.getStoragePath(oid);
+	}
+	
+	@Override
+	public long getMaxUploadSize() {
+		return filestoreManager.getMaxUploadSize();
+	};
+	
+	@Override
+	public void clearFilestoreCache() {
+		filestoreManager.clearFilestoreCache();
+	};
+
+	@Override
+	public long getFilestoreUsedByteCount() {
+		return filestoreManager.getFilestoreUsedByteCount();
+	};
+	
+	@Override
+	public long getFilestoreAvailableByteCount() {
+		return filestoreManager.getFilestoreAvailableByteCount();
+	};
+	
+	/*
 	 * PLUGIN MANAGER
 	 */
 
@@ -1325,4 +1411,5 @@ public class GitblitManager implements IGitblit {
 	public PluginRelease lookupRelease(String pluginId, String version) {
 		return pluginManager.lookupRelease(pluginId, version);
 	}
+	
 }

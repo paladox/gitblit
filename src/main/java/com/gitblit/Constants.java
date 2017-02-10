@@ -36,14 +36,19 @@ public class Constants {
 
 	public static final String FULL_NAME = "Gitblit - a pure Java Git solution";
 
+	@Deprecated
 	public static final String ADMIN_ROLE = "#admin";
 
+	@Deprecated
 	public static final String FORK_ROLE = "#fork";
 
+	@Deprecated
 	public static final String CREATE_ROLE = "#create";
 
+	@Deprecated
 	public static final String NOT_FEDERATED_ROLE = "#notfederated";
 
+	@Deprecated
 	public static final String NO_ROLE = "#none";
 
 	public static final String EXTERNAL_ACCOUNT = "#externalAccount";
@@ -55,6 +60,14 @@ public class Constants {
 	public static final String R_PATH = "/r/";
 
 	public static final String GIT_PATH = "/git/";
+	
+	public static final String REGEX_SHA256 = "[a-fA-F0-9]{64}";
+	
+	/**
+	 * This regular expression is used when searching for "mentions" in tickets
+	 * (when someone writes @thisOtherUser)
+	 */
+	public static final String REGEX_TICKET_MENTION = "\\B@(?<user>[^\\s]+)\\b";
 
 	public static final String ZIP_PATH = "/zip/";
 
@@ -69,6 +82,8 @@ public class Constants {
 	public static final String SPARKLESHARE_INVITE_PATH = "/sparkleshare/";
 
 	public static final String RAW_PATH = "/raw/";
+
+	public static final String PT_PATH = "/pt";
 
 	public static final String BRANCH_GRAPH_PATH = "/graph/";
 
@@ -85,6 +100,10 @@ public class Constants {
 	public static final int LEN_SHORTLOG = 78;
 
 	public static final int LEN_SHORTLOG_REFS = 60;
+	
+	public static final int LEN_FILESTORE_META_MIN = 125;
+	
+	public static final int LEN_FILESTORE_META_MAX = 146;
 
 	public static final String DEFAULT_BRANCH = "default";
 
@@ -130,6 +149,12 @@ public class Constants {
 
 	public static final String DEVELOP = "develop";
 
+	public static final String ATTRIB_AUTHTYPE = NAME + ":authentication-type";
+
+	public static final String ATTRIB_AUTHUSER = NAME + ":authenticated-user";
+	
+	public static final String R_LFS = "info/lfs/";
+
 	public static String getVersion() {
 		String v = Constants.class.getPackage().getImplementationVersion();
 		if (v == null) {
@@ -144,6 +169,17 @@ public class Constants {
 
 	public static String getBuildDate() {
 		return getManifestValue("build-date", "PENDING");
+	}
+
+	public static String getASCIIArt() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("  _____  _  _    _      _  _  _").append('\n');
+		sb.append(" |  __ \\(_)| |  | |    | |(_)| |").append('\n');
+		sb.append(" | |  \\/ _ | |_ | |__  | | _ | |_").append('\n');
+		sb.append(" | | __ | || __|| '_ \\ | || || __|").append("  ").append("http://gitblit.com").append('\n');
+		sb.append(" | |_\\ \\| || |_ | |_) || || || |_").append("   ").append("@gitblit").append('\n');
+		sb.append("  \\____/|_| \\__||_.__/ |_||_| \\__|").append("  ").append(Constants.getVersion()).append('\n');
+		return sb.toString();
 	}
 
 	private static String getManifestValue(String attrib, String defaultValue) {
@@ -163,6 +199,19 @@ public class Constants {
 		} catch (Exception e) {
 		}
 		return defaultValue;
+	}
+
+	public static enum Role {
+		NONE, ADMIN, CREATE, FORK, NOT_FEDERATED;
+
+		public String getRole() {
+			return "#" + name().replace("_", "").toLowerCase();
+		}
+
+		@Override
+		public String toString() {
+			return getRole();
+		}
 	}
 
 	/**
@@ -535,7 +584,7 @@ public class Constants {
 	}
 
 	public static enum AuthenticationType {
-		PUBLIC_KEY, CREDENTIALS, COOKIE, CERTIFICATE, CONTAINER;
+		PUBLIC_KEY, CREDENTIALS, COOKIE, CERTIFICATE, CONTAINER, HTTPHEADER;
 
 		public boolean isStandard() {
 			return ordinal() <= COOKIE.ordinal();
@@ -543,7 +592,7 @@ public class Constants {
 	}
 
 	public static enum AccountType {
-		LOCAL, EXTERNAL, CONTAINER, LDAP, REDMINE, SALESFORCE, WINDOWS, PAM, HTPASSWD;
+		LOCAL, CONTAINER, LDAP, REDMINE, SALESFORCE, WINDOWS, PAM, HTPASSWD, HTTPHEADER;
 
 		public static AccountType fromString(String value) {
 			for (AccountType type : AccountType.values()) {
@@ -595,6 +644,37 @@ public class Constants {
 			return fromString(scheme);
 		}
 	}
+
+	/**
+	 * The type of merge Gitblit will use when merging a ticket to the integration branch.
+	 * <p>
+	 * The default type is MERGE_ALWAYS.
+	 * <p>
+	 * This is modeled after the Gerrit SubmitType.
+	 */
+	public static enum MergeType {
+		/** Allows a merge only if it can be fast-forward merged into the integration branch. */
+		FAST_FORWARD_ONLY,
+		/** Uses a fast-forward merge if possible, other wise a merge commit is created. */
+		MERGE_IF_NECESSARY,
+		// Future REBASE_IF_NECESSARY,
+		/** Always merge with a merge commit, even when a fast-forward would be possible. */
+		MERGE_ALWAYS,
+		// Future? CHERRY_PICK
+		;
+
+		public static final MergeType DEFAULT_MERGE_TYPE = MERGE_ALWAYS;
+
+		public static MergeType fromName(String name) {
+			for (MergeType type : values()) {
+				if (type.name().equalsIgnoreCase(name)) {
+					return type;
+				}
+			}
+			return DEFAULT_MERGE_TYPE;
+		}
+	}
+
 
 	@Documented
 	@Retention(RetentionPolicy.RUNTIME)

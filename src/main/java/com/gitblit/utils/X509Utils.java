@@ -61,6 +61,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import javax.crypto.Cipher;
+import javax.naming.ldap.LdapName;
 
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
@@ -80,7 +81,10 @@ import org.bouncycastle.cert.jcajce.JcaX509ExtensionUtils;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.jce.PrincipalUtil;
 import org.bouncycastle.jce.interfaces.PKCS12BagAttributeCarrier;
+import org.bouncycastle.openssl.PEMEncryptor;
 import org.bouncycastle.openssl.PEMWriter;
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
+import org.bouncycastle.openssl.jcajce.JcePEMEncryptorBuilder;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.OperatorCreationException;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
@@ -739,6 +743,25 @@ public class X509Utils {
 	 */
 	public static File newClientBundle(X509Metadata clientMetadata, File caKeystoreFile,
 			String caKeystorePassword, X509Log x509log) {
+		return newClientBundle(null,clientMetadata,caKeystoreFile,caKeystorePassword,x509log);
+	}
+
+	/**
+	 * Creates a new client certificate PKCS#12 and PEM store.  Any existing
+	 * stores are destroyed.  After generation, the certificates are bundled
+	 * into a zip file with a personalized README file.
+	 *
+	 * The zip file reference is returned.
+	 *
+	 * @param user 
+	 * @param clientMetadata a container for dynamic parameters needed for generation
+	 * @param caKeystoreFile
+	 * @param caKeystorePassword
+	 * @param x509log
+	 * @return a zip file containing the P12, PEM, and personalized README
+	 */
+	public static File newClientBundle(com.gitblit.models.UserModel user,X509Metadata clientMetadata, File caKeystoreFile,
+				String caKeystorePassword, X509Log x509log) {		
 		try {
 			// read the Gitblit CA key and certificate
 			KeyStore store = openKeyStore(caKeystoreFile, caKeystorePassword);
@@ -751,8 +774,17 @@ public class X509Utils {
 	        x509log.log(MessageFormat.format("New client certificate {0,number,0} [{1}]", cert.getSerialNumber(), cert.getSubjectDN().getName()));
 
 	        // process template message
-	        String readme = processTemplate(new File(caKeystoreFile.getParentFile(), "instructions.tmpl"), clientMetadata);
-
+	        String readme = null;
+	        String sInstructionsFileName = "instructions.tmpl";
+	        if( user == null )
+	        	readme = processTemplate(new File(caKeystoreFile.getParentFile(),sInstructionsFileName), clientMetadata);
+	        else{
+	        	File fileInstructionsTmp = null;
+	        	if( (fileInstructionsTmp = new File(caKeystoreFile.getParentFile(),sInstructionsFileName+"_"+user.getPreferences().getLocale())).exists() )
+	        		readme = processTemplate(fileInstructionsTmp,clientMetadata);
+	        	else
+	        		readme = processTemplate(new File(caKeystoreFile.getParentFile(),sInstructionsFileName),clientMetadata);
+	        }
 	        // Create a zip bundle with the p12, pem, and a personalized readme
 	        File zipFile = new File(targetFolder, clientMetadata.commonName + ".zip");
 	        if (zipFile.exists()) {
@@ -883,8 +915,11 @@ public class X509Utils {
 	        if (pemFile.exists()) {
 	        	pemFile.delete();
 	        }
-	        PEMWriter pemWriter = new PEMWriter(new FileWriter(pemFile));
-	        pemWriter.writeObject(pair.getPrivate(), "DES-EDE3-CBC", clientMetadata.password.toCharArray(), new SecureRandom());
+	        JcePEMEncryptorBuilder builder = new JcePEMEncryptorBuilder("DES-EDE3-CBC");
+	        builder.setSecureRandom(new SecureRandom());
+	        PEMEncryptor pemEncryptor = builder.build(clientMetadata.password.toCharArray());
+	        JcaPEMWriter pemWriter = new JcaPEMWriter(new FileWriter(pemFile));
+	        pemWriter.writeObject(pair.getPrivate(), pemEncryptor);
 	        pemWriter.writeObject(userCert);
 	        pemWriter.writeObject(caCert);
 	        pemWriter.flush();
@@ -1111,17 +1146,18 @@ public class X509Utils {
 	}
 
 	public static X509Metadata getMetadata(X509Certificate cert) {
-		// manually split DN into OID components
-		// this is instead of parsing with LdapName which:
-		// (1) I don't trust the order of values
-		// (2) it filters out values like EMAILADDRESS
-		String dn = cert.getSubjectDN().getName();
 		Map<String, String> oids = new HashMap<String, String>();
-		for (String kvp : dn.split(",")) {
-			String [] val = kvp.trim().split("=");
-			String oid = val[0].toUpperCase().trim();
-			String data = val[1].trim();
-			oids.put(oid, data);
+		try {
+			String dn = cert.getSubjectDN().getName();
+			LdapName ldapName = new LdapName(dn);
+			for (int i = 0; i < ldapName.size(); i++) {
+				String [] val = ldapName.get(i).trim().split("=", 2);
+				String oid = val[0].toUpperCase().trim();
+				String data = val[1].trim();
+				oids.put(oid, data);
+			}
+		} catch (Exception e) {
+			throw new RuntimeException(e);
 		}
 
 		X509Metadata metadata = new X509Metadata(oids.get("CN"), "whocares");

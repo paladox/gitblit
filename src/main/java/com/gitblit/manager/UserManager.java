@@ -17,6 +17,8 @@ package com.gitblit.manager;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -36,6 +38,8 @@ import com.gitblit.extensions.UserTeamLifeCycleListener;
 import com.gitblit.models.TeamModel;
 import com.gitblit.models.UserModel;
 import com.gitblit.utils.StringUtils;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 
 /**
  * The user manager manages persistence and retrieval of users and teams.
@@ -43,6 +47,7 @@ import com.gitblit.utils.StringUtils;
  * @author James Moger
  *
  */
+@Singleton
 public class UserManager implements IUserManager {
 
 	private final Logger logger = LoggerFactory.getLogger(getClass());
@@ -57,6 +62,7 @@ public class UserManager implements IUserManager {
 
 	private IUserService userService;
 
+	@Inject
 	public UserManager(IRuntimeManager runtimeManager, IPluginManager pluginManager) {
 		this.settings = runtimeManager.getSettings();
 		this.runtimeManager = runtimeManager;
@@ -79,9 +85,9 @@ public class UserManager implements IUserManager {
 	 * @param userService
 	 */
 	public void setUserService(IUserService userService) {
-		logger.info(userService.toString());
 		this.userService = userService;
 		this.userService.setup(runtimeManager);
+		logger.info(userService.toString());
 	}
 
 	@Override
@@ -111,15 +117,35 @@ public class UserManager implements IUserManager {
 					// check to see if this "file" is a custom user service class
 					Class<?> realmClass = Class.forName(realm);
 					service = (IUserService) realmClass.newInstance();
-				} catch (Throwable t) {
+				} catch (ClassNotFoundException t) {
 					// typical file path configuration
 					File realmFile = runtimeManager.getFileOrFolder(Keys.realm.userService, "${baseFolder}/users.conf");
 					service = createUserService(realmFile);
+				} catch (InstantiationException | IllegalAccessException e) {
+					logger.error("failed to instantiate user service {}: {}. Trying once again with IRuntimeManager constructor", realm, e.getMessage());
+					//try once again with IRuntimeManager constructor. This adds support for subclasses of ConfigUserService and other custom IUserServices
+					service = createIRuntimeManagerAwareUserService(realm);
 				}
 			}
 			setUserService(service);
 		}
 		return this;
+	}
+
+	/**
+	 * Tries to create an {@link IUserService} with {@link #runtimeManager} as a constructor parameter
+	 *
+	 * @param realm the class name of the {@link IUserService} to be instantiated
+	 * @return the {@link IUserService} or {@code null} if instantiation fails
+	 */
+	private IUserService createIRuntimeManagerAwareUserService(String realm) {
+		try {
+		    Constructor<?> constructor = Class.forName(realm).getConstructor(IRuntimeManager.class);
+		    return (IUserService) constructor.newInstance(runtimeManager);
+		} catch (NoSuchMethodException | SecurityException | ClassNotFoundException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
+		    logger.error("failed to instantiate user service {}: {}", realm, e.getMessage());
+			return null;
+		}
 	}
 
 	protected IUserService createUserService(File realmFile) {

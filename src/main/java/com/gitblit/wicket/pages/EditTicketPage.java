@@ -52,6 +52,7 @@ import com.gitblit.utils.StringUtils;
 import com.gitblit.wicket.GitBlitWebSession;
 import com.gitblit.wicket.WicketUtils;
 import com.gitblit.wicket.panels.MarkdownTextArea;
+import com.google.common.base.Optional;
 
 /**
  * Page for editing a ticket.
@@ -82,6 +83,10 @@ public class EditTicketPage extends RepositoryPage {
 	private IModel<TicketMilestone> milestoneModel;
 
 	private Label descriptionPreview;
+
+	private IModel<TicketModel.Priority> priorityModel;
+
+	private IModel<TicketModel.Severity> severityModel;
 
 	public EditTicketPage(PageParameters params) {
 		super(params);
@@ -116,6 +121,8 @@ public class EditTicketPage extends RepositoryPage {
 		milestoneModel = Model.of();
 		mergeToModel = Model.of(ticket.mergeTo == null ? getRepositoryModel().mergeTo : ticket.mergeTo);
 		statusModel = Model.of(ticket.status);
+		priorityModel = Model.of(ticket.priority);
+		severityModel = Model.of(ticket.severity);
 
 		setStatelessHint(false);
 		setOutputMarkupId(true);
@@ -134,7 +141,7 @@ public class EditTicketPage extends RepositoryPage {
 		form.add(new TextField<String>("title", titleModel));
 		form.add(new TextField<String>("topic", topicModel));
 
-		final IModel<String> markdownPreviewModel = new Model<String>();
+		final IModel<String> markdownPreviewModel = Model.of(ticket.body == null ? "" : ticket.body);
 		descriptionPreview = new Label("descriptionPreview", markdownPreviewModel);
 		descriptionPreview.setEscapeModelStrings(false);
 		descriptionPreview.setOutputMarkupId(true);
@@ -159,6 +166,9 @@ public class EditTicketPage extends RepositoryPage {
 		Fragment status = new Fragment("status", "statusFragment", this);
 		status.add(new DropDownChoice<TicketModel.Status>("status", statusModel, statusChoices));
 		form.add(status);
+
+		List<TicketModel.Severity> severityChoices = Arrays.asList(TicketModel.Severity.choices());
+		form.add(new DropDownChoice<TicketModel.Severity>("severity", severityModel, severityChoices));
 
 		if (currentUser.canAdmin(ticket, getRepositoryModel())) {
 			// responsible
@@ -213,10 +223,16 @@ public class EditTicketPage extends RepositoryPage {
 				milestones.add(new TicketMilestone(NIL));
 			}
 
+			// milestone
 			Fragment milestone = new Fragment("milestone", "milestoneFragment", this);
-
 			milestone.add(new DropDownChoice<TicketMilestone>("milestone", milestoneModel, milestones));
 			form.add(milestone.setVisible(!milestones.isEmpty()));
+
+			// priority
+			Fragment priority = new Fragment("priority", "priorityFragment", this);
+			List<TicketModel.Priority> priorityChoices = Arrays.asList(TicketModel.Priority.choices());
+			priority.add(new DropDownChoice<TicketModel.Priority>("priority", priorityModel, priorityChoices));
+			form.add(priority);
 
 			// mergeTo (integration branch)
 			List<String> branches = new ArrayList<String>();
@@ -237,6 +253,7 @@ public class EditTicketPage extends RepositoryPage {
 			form.add(new Label("responsible").setVisible(false));
 			form.add(new Label("milestone").setVisible(false));
 			form.add(new Label("mergeto").setVisible(false));
+			form.add(new Label("priority").setVisible(false));
 		}
 
 		form.add(new AjaxButton("update") {
@@ -268,7 +285,7 @@ public class EditTicketPage extends RepositoryPage {
 					change.setField(Field.title, title);
 				}
 
-				String description = descriptionEditor.getText();
+				String description = Optional.fromNullable(descriptionEditor.getText()).or("");
 				if ((StringUtils.isEmpty(ticket.body) && !StringUtils.isEmpty(description))
 						|| (!StringUtils.isEmpty(ticket.body) && !ticket.body.equals(description))) {
 					// description change
@@ -287,9 +304,9 @@ public class EditTicketPage extends RepositoryPage {
 					change.setField(Field.type, type);
 				}
 
-				String topic = topicModel.getObject();
+				String topic = Optional.fromNullable(topicModel.getObject()).or("");
 				if ((StringUtils.isEmpty(ticket.topic) && !StringUtils.isEmpty(topic))
-						|| (!StringUtils.isEmpty(topic) && !topic.equals(ticket.topic))) {
+					|| (!StringUtils.isEmpty(ticket.topic) && !ticket.topic.equals(topic))) {
 					// topic change
 					change.setField(Field.topic, topic);
 				}
@@ -315,6 +332,18 @@ public class EditTicketPage extends RepositoryPage {
 					}
 				}
 
+				TicketModel.Priority priority = priorityModel.getObject();
+				if (!ticket.priority.equals(priority))
+				{
+					change.setField(Field.priority, priority);
+				}
+
+				TicketModel.Severity severity = severityModel.getObject();
+				if (!ticket.severity.equals(severity))
+				{
+					change.setField(Field.severity, severity);
+				}
+
 				String mergeTo = mergeToModel.getObject();
 				if ((StringUtils.isEmpty(ticket.mergeTo) && !StringUtils.isEmpty(mergeTo))
 						|| (!StringUtils.isEmpty(mergeTo) && !mergeTo.equals(ticket.mergeTo))) {
@@ -330,13 +359,13 @@ public class EditTicketPage extends RepositoryPage {
 					if (ticket != null) {
 						TicketNotifier notifier = app().tickets().createNotifier();
 						notifier.sendMailing(ticket);
-						setResponsePage(TicketsPage.class, WicketUtils.newObjectParameter(getRepositoryModel().name, "" + ticket.number));
+						redirectTo(TicketsPage.class, WicketUtils.newObjectParameter(getRepositoryModel().name, "" + ticket.number));
 					} else {
 						// TODO error
 					}
 				} else {
 					// nothing to change?!
-					setResponsePage(TicketsPage.class, WicketUtils.newObjectParameter(getRepositoryModel().name, "" + ticket.number));
+					redirectTo(TicketsPage.class, WicketUtils.newObjectParameter(getRepositoryModel().name, "" + ticket.number));
 				}
 			}
 		});

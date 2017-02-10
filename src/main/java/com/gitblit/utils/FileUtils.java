@@ -26,6 +26,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * Common file utilities.
@@ -138,9 +140,10 @@ public class FileUtils {
 	public static String readContent(File file, String lineEnding) {
 		StringBuilder sb = new StringBuilder();
 		InputStreamReader is = null;
+		BufferedReader reader = null;
 		try {
 			is = new InputStreamReader(new FileInputStream(file), Charset.forName("UTF-8"));
-			BufferedReader reader = new BufferedReader(is);
+			reader = new BufferedReader(is);
 			String line = null;
 			while ((line = reader.readLine()) != null) {
 				sb.append(line);
@@ -152,6 +155,14 @@ public class FileUtils {
 			System.err.println("Failed to read content of " + file.getAbsolutePath());
 			t.printStackTrace();
 		} finally {
+			if (reader != null){
+				try {
+					reader.close();
+				} catch (IOException ioe) {
+					System.err.println("Failed to close file " + file.getAbsolutePath());
+					ioe.printStackTrace();
+				}
+			}
 			if (is != null) {
 				try {
 					is.close();
@@ -291,20 +302,10 @@ public class FileUtils {
 	 * @return a relative path from basePath to path
 	 */
 	public static String getRelativePath(File basePath, File path) {
-		File exactBase = getExactFile(basePath);
-		File exactPath = getExactFile(path);
-		if (path.getAbsolutePath().startsWith(basePath.getAbsolutePath())) {
-			// absolute base-path match
-			return StringUtils.getRelativePath(basePath.getAbsolutePath(), path.getAbsolutePath());
-		} else if (exactPath.getPath().startsWith(exactBase.getPath())) {
-			// canonical base-path match
-			return StringUtils.getRelativePath(exactBase.getPath(), exactPath.getPath());
-		} else if (exactPath.getPath().startsWith(basePath.getAbsolutePath())) {
-			// mixed path match
-			return StringUtils.getRelativePath(basePath.getAbsolutePath(), exactPath.getPath());
-		} else if (path.getAbsolutePath().startsWith(exactBase.getPath())) {
-			// mixed path match
-			return StringUtils.getRelativePath(exactBase.getPath(), path.getAbsolutePath());
+		Path exactBase = Paths.get(getExactFile(basePath).toURI());
+		Path exactPath = Paths.get(getExactFile(path).toURI());
+		if (exactPath.startsWith(exactBase)) {
+			return exactBase.relativize(exactPath).toString().replace('\\', '/');
 		}
 		// no relative relationship
 		return null;

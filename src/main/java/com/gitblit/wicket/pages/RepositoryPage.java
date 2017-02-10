@@ -64,6 +64,7 @@ import com.gitblit.utils.ArrayUtils;
 import com.gitblit.utils.BugtraqProcessor;
 import com.gitblit.utils.DeepCopier;
 import com.gitblit.utils.JGitUtils;
+import com.gitblit.utils.ModelUtils;
 import com.gitblit.utils.RefLogUtils;
 import com.gitblit.utils.StringUtils;
 import com.gitblit.wicket.CacheControl;
@@ -73,6 +74,7 @@ import com.gitblit.wicket.WicketUtils;
 import com.gitblit.wicket.panels.LinkPanel;
 import com.gitblit.wicket.panels.NavigationPanel;
 import com.gitblit.wicket.panels.RefsPanel;
+import com.google.common.base.Optional;
 
 public abstract class RepositoryPage extends RootPage {
 
@@ -191,14 +193,28 @@ public abstract class RepositoryPage extends RootPage {
 	}
 
 	private List<NavLink> registerNavLinks() {
+		Repository r = getRepository();
+		RepositoryModel model = getRepositoryModel();
+
 		PageParameters params = null;
+		PageParameters objectParams = null;
 		if (!StringUtils.isEmpty(repositoryName)) {
 			params = WicketUtils.newRepositoryParameter(getRepositoryName());
+			objectParams = params;
+
+			// preserve the objectid iff the objectid directly (or indirectly) refers to a ref
+			if (isCommitPage() && !StringUtils.isEmpty(objectId)) {
+				RevCommit commit = JGitUtils.getCommit(r, objectId);
+				if (commit != null) {
+					String bestId = getBestCommitId(commit);
+					if (!commit.getName().equals(bestId)) {
+						objectParams = WicketUtils.newObjectParameter(getRepositoryName(), bestId);
+					}
+				}
+			}
 		}
 		List<NavLink> navLinks = new ArrayList<NavLink>();
 
-		Repository r = getRepository();
-		RepositoryModel model = getRepositoryModel();
 
 		// standard links
 		if (RefLogUtils.getRefLogBranch(r) == null) {
@@ -213,13 +229,13 @@ public abstract class RepositoryPage extends RootPage {
 			return navLinks;
 		}
 
-		navLinks.add(new PageNavLink("gb.commits", LogPage.class, params));
-		navLinks.add(new PageNavLink("gb.tree", TreePage.class, params));
+		navLinks.add(new PageNavLink("gb.commits", LogPage.class, objectParams));
+		navLinks.add(new PageNavLink("gb.tree", TreePage.class, objectParams));
 		if (app().tickets().isReady() && (app().tickets().isAcceptingNewTickets(model) || app().tickets().hasTickets(model))) {
 			PageParameters tParams = WicketUtils.newOpenTicketsParameter(getRepositoryName());
 			navLinks.add(new PageNavLink("gb.tickets", TicketsPage.class, tParams));
 		}
-		navLinks.add(new PageNavLink("gb.docs", DocsPage.class, params, true));
+		navLinks.add(new PageNavLink("gb.docs", DocsPage.class, objectParams, true));
 		if (app().settings().getBoolean(Keys.web.allowForking, true)) {
 			navLinks.add(new PageNavLink("gb.forks", ForksPage.class, params, true));
 		}
@@ -253,8 +269,15 @@ public abstract class RepositoryPage extends RootPage {
 
 	@Override
 	protected void setupPage(String repositoryName, String pageName) {
+		
+		//This method should only be called once in the page lifecycle.
+		//However, it must be called after the constructor has run, hence not in onInitialize
+		//It may be attempted to be called again if an info or error message is displayed.
+		if (get("projectTitle") != null) { return; }
+		
 		String projectName = StringUtils.getFirstPathElement(repositoryName);
 		ProjectModel project = app().projects().getProjectModel(projectName);
+
 		if (project.isUserProject()) {
 			// user-as-project
 			add(new LinkPanel("projectTitle", null, project.getDisplayName(),
@@ -281,25 +304,38 @@ public abstract class RepositoryPage extends RootPage {
 		RepositoryModel model = getRepositoryModel();
 		if (StringUtils.isEmpty(model.originRepository)) {
 			if (model.isMirror) {
+				add(new Fragment("repoIcon", "mirrorIconFragment", this));
 				Fragment mirrorFrag = new Fragment("originRepository", "mirrorFragment", this);
 				Label lbl = new Label("originRepository", MessageFormat.format(getString("gb.mirrorOf"), "<b>" + model.origin + "</b>"));
 				mirrorFrag.add(lbl.setEscapeModelStrings(false));
 				add(mirrorFrag);
 			} else {
-				add(new Label("originRepository").setVisible(false));
+				if (model.isBare) {
+					add(new Fragment("repoIcon", "repoIconFragment", this));
+				} else {
+					add(new Fragment("repoIcon", "cloneIconFragment", this));
+				}
+				add(new Label("originRepository", Optional.of(model.description).or("")));
 			}
 		} else {
 			RepositoryModel origin = app().repositories().getRepositoryModel(model.originRepository);
 			if (origin == null) {
-				// no origin repository
-				add(new Label("originRepository").setVisible(false));
+				// no origin repository, show description if available
+				if (model.isBare) {
+					add(new Fragment("repoIcon", "repoIconFragment", this));
+				} else {
+					add(new Fragment("repoIcon", "cloneIconFragment", this));
+				}
+				add(new Label("originRepository", Optional.of(model.description).or("")));
 			} else if (!user.canView(origin)) {
 				// show origin repository without link
+				add(new Fragment("repoIcon", "forkIconFragment", this));
 				Fragment forkFrag = new Fragment("originRepository", "originFragment", this);
 				forkFrag.add(new Label("originRepository", StringUtils.stripDotGit(model.originRepository)));
 				add(forkFrag);
 			} else {
 				// link to origin repository
+				add(new Fragment("repoIcon", "forkIconFragment", this));
 				Fragment forkFrag = new Fragment("originRepository", "originFragment", this);
 				forkFrag.add(new LinkPanel("originRepository", null, StringUtils.stripDotGit(model.originRepository),
 						SummaryPage.class, WicketUtils.newRepositoryParameter(model.originRepository)));
@@ -342,8 +378,10 @@ public abstract class RepositoryPage extends RootPage {
 			add(new ExternalLink("myForkLink", "").setVisible(false));
 		} else {
 			String fork = app().repositories().getFork(user.username, model.name);
+			String userRepo = ModelUtils.getPersonalPath(user.username) + "/" + StringUtils.stripDotGit(StringUtils.getLastPathElement(model.name));
+			boolean hasUserRepo = app().repositories().hasRepository(userRepo);
 			boolean hasFork = fork != null;
-			boolean canFork = user.canFork(model) && model.hasCommits;
+			boolean canFork = user.canFork(model) && model.hasCommits && !hasUserRepo;
 
 			if (hasFork || !canFork) {
 				// user not allowed to fork or fork already exists or repo forbids forking
@@ -453,7 +491,7 @@ public abstract class RepositoryPage extends RootPage {
 		// find first branch match
 		for (RefModel ref : JGitUtils.getLocalBranches(r, false, -1)) {
 			if (ref.getObjectId().getName().equals(id)) {
-				return ref.getName();
+				return Repository.shortenRefName(ref.getName());
 			}
 		}
 
@@ -550,7 +588,8 @@ public abstract class RepositoryPage extends RootPage {
 		String html;
 		switch (model.commitMessageRenderer) {
 		case MARKDOWN:
-			html = MessageFormat.format("<div class='commit_message'>{0}</div>", content);
+			String safeContent = app().xssFilter().relaxed(content);
+			html = MessageFormat.format("<div class='commit_message'>{0}</div>", safeContent);
 			break;
 		default:
 			html = MessageFormat.format("<pre class='commit_message'>{0}</pre>", content);
@@ -560,6 +599,10 @@ public abstract class RepositoryPage extends RootPage {
 	}
 
 	protected abstract String getPageName();
+
+	protected boolean isCommitPage() {
+		return false;
+	}
 
 	protected Component createPersonPanel(String wicketId, PersonIdent identity,
 			Constants.SearchType searchType) {
@@ -626,6 +669,7 @@ public abstract class RepositoryPage extends RootPage {
 		}
 	}
 
+
 	@Override
 	protected void onBeforeRender() {
 		// dispose of repository object
@@ -633,8 +677,10 @@ public abstract class RepositoryPage extends RootPage {
 			r.close();
 			r = null;
 		}
+		
 		// setup page header and footer
 		setupPage(getRepositoryName(), "/ " + getPageName());
+
 		super.onBeforeRender();
 	}
 

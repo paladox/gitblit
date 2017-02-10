@@ -18,8 +18,9 @@ package com.gitblit.servlet;
 import java.io.IOException;
 import java.text.MessageFormat;
 
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 import javax.servlet.FilterChain;
-import javax.servlet.FilterConfig;
 import javax.servlet.ServletException;
 import javax.servlet.ServletRequest;
 import javax.servlet.ServletResponse;
@@ -29,10 +30,9 @@ import javax.servlet.http.HttpServletResponse;
 import com.gitblit.Constants.RpcRequest;
 import com.gitblit.IStoredSettings;
 import com.gitblit.Keys;
+import com.gitblit.manager.IAuthenticationManager;
 import com.gitblit.manager.IRuntimeManager;
 import com.gitblit.models.UserModel;
-
-import dagger.ObjectGraph;
 
 /**
  * The RpcFilter is a servlet filter that secures the RpcServlet.
@@ -47,17 +47,23 @@ import dagger.ObjectGraph;
  * @author James Moger
  *
  */
+@Singleton
 public class RpcFilter extends AuthenticationFilter {
 
 	private IStoredSettings settings;
 
 	private IRuntimeManager runtimeManager;
 
-	@Override
-	protected void inject(ObjectGraph dagger, FilterConfig filterConfig) {
-		super.inject(dagger, filterConfig);
-		this.settings = dagger.get(IStoredSettings.class);
-		this.runtimeManager = dagger.get(IRuntimeManager.class);
+	@Inject
+	public RpcFilter(
+			IStoredSettings settings,
+			IRuntimeManager runtimeManager,
+			IAuthenticationManager authenticationManager) {
+
+		super(authenticationManager);
+
+		this.settings = settings;
+		this.runtimeManager = runtimeManager;
 	}
 
 	/**
@@ -122,7 +128,7 @@ public class RpcFilter extends AuthenticationFilter {
 				return;
 			} else {
 				// check user access for request
-				if (user.canAdmin() || canAccess(user, requestType)) {
+				if (user.canAdmin() || !adminRequest) {
 					// authenticated request permitted.
 					// pass processing to the restricted servlet.
 					newSession(authenticatedRequest, httpResponse);
@@ -146,16 +152,5 @@ public class RpcFilter extends AuthenticationFilter {
 		// unauthenticated request permitted.
 		// pass processing to the restricted servlet.
 		chain.doFilter(authenticatedRequest, httpResponse);
-	}
-
-	private boolean canAccess(UserModel user, RpcRequest requestType) {
-		switch (requestType) {
-		case GET_PROTOCOL:
-			return true;
-		case LIST_REPOSITORIES:
-			return true;
-		default:
-			return user.canAdmin();
-		}
 	}
 }

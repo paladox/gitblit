@@ -476,6 +476,15 @@ public class JGitUtilsTest extends GitblitUnitTest {
 	}
 
 	@Test
+	public void testFilesInPath2() throws Exception {
+		assertEquals(0, JGitUtils.getFilesInPath2(null, null, null).size());
+		Repository repository = GitBlitSuite.getHelloworldRepository();
+		List<PathModel> files = JGitUtils.getFilesInPath2(repository, null, null);
+		repository.close();
+		assertTrue(files.size() > 10);
+	}
+
+	@Test
 	public void testDocuments() throws Exception {
 		Repository repository = GitBlitSuite.getTicgitRepository();
 		List<String> extensions = Arrays.asList(new String[] { ".mkd", ".md" });
@@ -520,7 +529,7 @@ public class JGitUtilsTest extends GitblitUnitTest {
 		// grab the commits since 2008-07-15
 		commits = JGitUtils.getRevLog(repository, null,
 				new SimpleDateFormat("yyyy-MM-dd").parse("2008-07-15"));
-		assertEquals(19, commits.size());
+		assertEquals(12, commits.size());
 		repository.close();
 	}
 
@@ -576,16 +585,16 @@ public class JGitUtilsTest extends GitblitUnitTest {
 
 	@Test
 	public void testZip() throws Exception {
-		assertFalse(CompressionUtils.zip(null, null, null, null));
+		assertFalse(CompressionUtils.zip(null, null, null, null, null));
 		Repository repository = GitBlitSuite.getHelloworldRepository();
 		File zipFileA = new File(GitBlitSuite.REPOSITORIES, "helloworld.zip");
 		FileOutputStream fosA = new FileOutputStream(zipFileA);
-		boolean successA = CompressionUtils.zip(repository, null, Constants.HEAD, fosA);
+		boolean successA = CompressionUtils.zip(repository, null, null, Constants.HEAD, fosA);
 		fosA.close();
 
 		File zipFileB = new File(GitBlitSuite.REPOSITORIES, "helloworld-java.zip");
 		FileOutputStream fosB = new FileOutputStream(zipFileB);
-		boolean successB = CompressionUtils.zip(repository, "java.java", Constants.HEAD, fosB);
+		boolean successB = CompressionUtils.zip(repository, null, "java.java", Constants.HEAD, fosB);
 		fosB.close();
 
 		repository.close();

@@ -22,11 +22,13 @@ import java.util.List;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.sshd.common.SshException;
-import org.apache.sshd.common.util.Buffer;
+import org.apache.sshd.common.util.buffer.Buffer;
+import org.apache.sshd.common.util.buffer.ByteArrayBuffer;
 import org.eclipse.jgit.lib.Constants;
 
 import com.gitblit.Constants.AccessPermission;
 import com.gitblit.utils.StringUtils;
+import com.google.common.base.Joiner;
 
 /**
  * Class that encapsulates a public SSH key and it's metadata.
@@ -51,7 +53,8 @@ public class SshKey implements Serializable {
 	private AccessPermission permission;
 
 	public SshKey(String data) {
-		this.rawData = data;
+		// strip out line breaks (issue-571)
+		this.rawData = Joiner.on("").join(data.replace("\r\n", "\n").split("\n"));
 		this.permission = AccessPermission.PUSH;
 	}
 
@@ -70,7 +73,7 @@ public class SshKey implements Serializable {
 			}
 			final byte[] bin = Base64.decodeBase64(Constants.encodeASCII(parts[1]));
 			try {
-				publicKey = new Buffer(bin).getRawPublicKey();
+				publicKey = new ByteArrayBuffer(bin).getRawPublicKey();
 			} catch (SshException e) {
 				throw new RuntimeException(e);
 			}
@@ -143,7 +146,7 @@ public class SshKey implements Serializable {
 	public String getRawData() {
 		if (rawData == null && publicKey != null) {
 			// build the raw data manually from the public key
-			Buffer buf = new Buffer();
+			Buffer buf = new ByteArrayBuffer();
 
 			// 1: identify the algorithm
 			buf.putRawPublicKey(publicKey);

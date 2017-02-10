@@ -64,11 +64,10 @@ public class TicketListPanel extends BasePanel {
 			@Override
 			protected void populateItem(Item<QueryResult> item) {
 				final QueryResult ticket = item.getModelObject();
-				final RepositoryModel repository = app().repositories().getRepositoryModel(ticket.repository);
 
 				if (showSwatch) {
 					// set repository color
-					String color = StringUtils.getColor(StringUtils.stripDotGit(repository.name));
+					String color = StringUtils.getColor(StringUtils.stripDotGit(ticket.repository));
 					WicketUtils.setCssStyle(item, MessageFormat.format("border-left: 2px solid {0};", color));
 				}
 
@@ -84,7 +83,10 @@ public class TicketListPanel extends BasePanel {
 					item.add(new Label("ticketsLink").setVisible(false));
 				}
 
-				item.add(TicketsUI.getStateIcon("state", ticket.type, ticket.status));
+				Label icon = TicketsUI.getStateIcon("state", ticket.type, ticket.status, ticket.severity);
+				WicketUtils.addCssClass(icon, TicketsUI.getSeverityClass(ticket.severity));
+				item.add(icon);
+
 				item.add(new Label("id", "" + ticket.number));
 				UserModel creator = app().users().getUserModel(ticket.createdBy);
 				if (creator != null) {
@@ -121,13 +123,25 @@ public class TicketListPanel extends BasePanel {
 
 					@Override
 					public void populateItem(final Item<String> labelItem) {
-						BugtraqProcessor btp  = new BugtraqProcessor(app().settings());
-						Repository db = app().repositories().getRepository(repository.name);
-						String content = btp.processText(db, repository.name, labelItem.getModelObject());
-						db.close();
-						Label label = new Label("label", content);
-						label.setEscapeModelStrings(false);
-						TicketLabel tLabel = app().tickets().getLabel(repository, labelItem.getModelObject());
+						RepositoryModel repository = app().repositories().getRepositoryModel(ticket.repository);
+						Label label;
+						TicketLabel tLabel;
+						if (repository == null) {
+							label = new Label("label", labelItem.getModelObject());
+							tLabel = new TicketLabel(labelItem.getModelObject());
+						} else {
+							Repository db = app().repositories().getRepository(repository.name);
+							BugtraqProcessor btp  = new BugtraqProcessor(app().settings());
+							String content = btp.processText(db, repository.name, labelItem.getModelObject());
+							String safeContent = app().xssFilter().relaxed(content);
+							db.close();
+
+							label = new Label("label", safeContent);
+							label.setEscapeModelStrings(false);
+
+							tLabel = app().tickets().getLabel(repository, labelItem.getModelObject());
+						}
+
 						String background = MessageFormat.format("background-color:{0};", tLabel.color);
 						label.add(new SimpleAttributeModifier("style", background));
 						labelItem.add(label);
@@ -142,7 +156,7 @@ public class TicketListPanel extends BasePanel {
 					if (responsible == null) {
 						responsible = new UserModel(ticket.responsible);
 					}
-					GravatarImage avatar = new GravatarImage("responsible", responsible.getDisplayName(),
+					AvatarImage avatar = new AvatarImage("responsible", responsible.getDisplayName(),
 							responsible.emailAddress, null, 16, true);
 					avatar.setTooltip(getString("gb.responsible") + ": " + responsible.getDisplayName());
 					item.add(avatar);
@@ -155,6 +169,11 @@ public class TicketListPanel extends BasePanel {
 
 				// watching indicator
 				item.add(new Label("watching").setVisible(ticket.isWatching(GitBlitWebSession.get().getUsername())));
+
+				// priority indicator
+				Label priorityIcon = TicketsUI.getPriorityIcon("priority", ticket.priority);
+				WicketUtils.addCssClass(priorityIcon, TicketsUI.getPriorityClass(ticket.priority));
+				item.add(priorityIcon.setVisible(true));
 
 				// status indicator
 				String css = TicketsUI.getLozengeClass(ticket.status, true);

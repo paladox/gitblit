@@ -25,6 +25,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 import javax.servlet.http.HttpServletResponse;
 
 import com.gitblit.Constants.FederationRequest;
@@ -43,14 +45,13 @@ import com.gitblit.utils.HttpUtils;
 import com.gitblit.utils.StringUtils;
 import com.gitblit.utils.TimeUtils;
 
-import dagger.ObjectGraph;
-
 /**
  * Handles federation requests.
  *
  * @author James Moger
  *
  */
+@Singleton
 public class FederationServlet extends JsonServlet {
 
 	private static final long serialVersionUID = 1L;
@@ -63,12 +64,17 @@ public class FederationServlet extends JsonServlet {
 
 	private IFederationManager federationManager;
 
-	@Override
-	protected void inject(ObjectGraph dagger) {
-		this.settings = dagger.get(IStoredSettings.class);
-		this.userManager = dagger.get(IUserManager.class);
-		this.repositoryManager = dagger.get(IRepositoryManager.class);
-		this.federationManager = dagger.get(IFederationManager.class);
+	@Inject
+	public FederationServlet(
+			IStoredSettings settings,
+			IUserManager userManager,
+			IRepositoryManager repositoryManager,
+			IFederationManager federationManager) {
+
+		this.settings = settings;
+		this.userManager = userManager;
+		this.repositoryManager = repositoryManager;
+		this.federationManager = federationManager;
 	}
 
 	/**
@@ -164,7 +170,7 @@ public class FederationServlet extends JsonServlet {
 
 			// setup the last and netx pull dates
 			results.lastPull = new Date();
-			int mins = TimeUtils.convertFrequencyToMinutes(results.frequency);
+			int mins = TimeUtils.convertFrequencyToMinutes(results.frequency, 5);
 			results.nextPull = new Date(System.currentTimeMillis() + (mins * 60 * 1000L));
 
 			// acknowledge the receipt of status

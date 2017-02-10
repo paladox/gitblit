@@ -19,7 +19,6 @@ import java.io.IOException;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -31,21 +30,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.eclipse.jgit.api.errors.ConcurrentRefUpdateException;
-import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.dircache.DirCacheBuilder;
 import org.eclipse.jgit.dircache.DirCacheEntry;
 import org.eclipse.jgit.events.RefsChangedEvent;
 import org.eclipse.jgit.events.RefsChangedListener;
-import org.eclipse.jgit.internal.JGitText;
-import org.eclipse.jgit.lib.CommitBuilder;
 import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectInserter;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefRename;
-import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.RefUpdate.Result;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
@@ -72,6 +67,8 @@ import com.gitblit.models.TicketModel.Change;
 import com.gitblit.utils.ArrayUtils;
 import com.gitblit.utils.JGitUtils;
 import com.gitblit.utils.StringUtils;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 
 /**
  * Implementation of a ticket service based on an orphan branch.  All tickets
@@ -81,6 +78,7 @@ import com.gitblit.utils.StringUtils;
  * @author James Moger
  *
  */
+@Singleton
 public class BranchTicketService extends ITicketService implements RefsChangedListener {
 
 	public static final String BRANCH = "refs/meta/gitblit/tickets";
@@ -91,6 +89,7 @@ public class BranchTicketService extends ITicketService implements RefsChangedLi
 
 	private final Map<String, AtomicLong> lastAssignedId;
 
+	@Inject
 	public BranchTicketService(
 			IRuntimeManager runtimeManager,
 			IPluginManager pluginManager,
@@ -112,6 +111,7 @@ public class BranchTicketService extends ITicketService implements RefsChangedLi
 
 	@Override
 	public BranchTicketService start() {
+		log.info("{} started", getClass().getSimpleName());
 		return this;
 	}
 
@@ -292,7 +292,7 @@ public class BranchTicketService extends ITicketService implements RefsChangedLi
 			log.error("failed to read " + file, e);
 		} finally {
 			if (rw != null) {
-				rw.release();
+				rw.close();
 			}
 		}
 		return null;
@@ -333,7 +333,7 @@ public class BranchTicketService extends ITicketService implements RefsChangedLi
 			Set<String> ignorePaths = new HashSet<String>();
 			ignorePaths.add(file);
 
-			for (DirCacheEntry entry : getTreeEntries(db, ignorePaths)) {
+			for (DirCacheEntry entry : JGitUtils.getTreeEntries(db, BRANCH, ignorePaths)) {
 				builder.add(entry);
 			}
 
@@ -348,7 +348,7 @@ public class BranchTicketService extends ITicketService implements RefsChangedLi
 		} catch (IOException e) {
 			log.error("", e);
 		} finally {
-			inserter.release();
+			inserter.close();
 		}
 	}
 
@@ -707,7 +707,7 @@ public class BranchTicketService extends ITicketService implements RefsChangedLi
 			} finally {
 				// release the treewalk
 				if (treeWalk != null) {
-					treeWalk.release();
+					treeWalk.close();
 				}
 			}
 		} finally {
@@ -799,116 +799,30 @@ public class BranchTicketService extends ITicketService implements RefsChangedLi
 				}
 			}
 
-			for (DirCacheEntry entry : getTreeEntries(db, ignorePaths)) {
+			for (DirCacheEntry entry : JGitUtils.getTreeEntries(db, BRANCH, ignorePaths)) {
 				builder.add(entry);
 			}
 
 			// finish the index
 			builder.finish();
 		} finally {
-			inserter.release();
+			inserter.close();
 		}
 		return newIndex;
 	}
 
-	/**
-	 * Returns all tree entries that do not match the ignore paths.
-	 *
-	 * @param db
-	 * @param ignorePaths
-	 * @param dcBuilder
-	 * @throws IOException
-	 */
-	private List<DirCacheEntry> getTreeEntries(Repository db, Collection<String> ignorePaths) throws IOException {
-		List<DirCacheEntry> list = new ArrayList<DirCacheEntry>();
-		TreeWalk tw = null;
-		try {
-			tw = new TreeWalk(db);
-			ObjectId treeId = db.resolve(BRANCH + "^{tree}");
-			int hIdx = tw.addTree(treeId);
-			tw.setRecursive(true);
-
-			while (tw.next()) {
-				String path = tw.getPathString();
-				CanonicalTreeParser hTree = null;
-				if (hIdx != -1) {
-					hTree = tw.getTree(hIdx, CanonicalTreeParser.class);
-				}
-				if (!ignorePaths.contains(path)) {
-					// add all other tree entries
-					if (hTree != null) {
-						final DirCacheEntry entry = new DirCacheEntry(path);
-						entry.setObjectId(hTree.getEntryObjectId());
-						entry.setFileMode(hTree.getEntryFileMode());
-						list.add(entry);
-					}
-				}
-			}
-		} finally {
-			if (tw != null) {
-				tw.release();
-			}
-		}
-		return list;
-	}
-
 	private boolean commitIndex(Repository db, DirCache index, String author, String message) throws IOException, ConcurrentRefUpdateException {
+		final boolean forceCommit = true;
 		boolean success = false;
-
+		
 		ObjectId headId = db.resolve(BRANCH + "^{commit}");
 		if (headId == null) {
 			// create the branch
 			createTicketsBranch(db);
-			headId = db.resolve(BRANCH + "^{commit}");
 		}
-		ObjectInserter odi = db.newObjectInserter();
-		try {
-			// Create the in-memory index of the new/updated ticket
-			ObjectId indexTreeId = index.writeTree(odi);
-
-			// Create a commit object
-			PersonIdent ident = new PersonIdent(author, "gitblit@localhost");
-			CommitBuilder commit = new CommitBuilder();
-			commit.setAuthor(ident);
-			commit.setCommitter(ident);
-			commit.setEncoding(Constants.ENCODING);
-			commit.setMessage(message);
-			commit.setParentId(headId);
-			commit.setTreeId(indexTreeId);
-
-			// Insert the commit into the repository
-			ObjectId commitId = odi.insert(commit);
-			odi.flush();
-
-			RevWalk revWalk = new RevWalk(db);
-			try {
-				RevCommit revCommit = revWalk.parseCommit(commitId);
-				RefUpdate ru = db.updateRef(BRANCH);
-				ru.setNewObjectId(commitId);
-				ru.setExpectedOldObjectId(headId);
-				ru.setRefLogMessage("commit: " + revCommit.getShortMessage(), false);
-				Result rc = ru.forceUpdate();
-				switch (rc) {
-				case NEW:
-				case FORCED:
-				case FAST_FORWARD:
-					success = true;
-					break;
-				case REJECTED:
-				case LOCK_FAILURE:
-					throw new ConcurrentRefUpdateException(JGitText.get().couldNotLockHEAD,
-							ru.getRef(), rc);
-				default:
-					throw new JGitInternalException(MessageFormat.format(
-							JGitText.get().updatingRefFailed, BRANCH, commitId.toString(),
-							rc));
-				}
-			} finally {
-				revWalk.release();
-			}
-		} finally {
-			odi.release();
-		}
+		
+		success = JGitUtils.commitIndex(db,  BRANCH,  index, headId, forceCommit, author, "gitblit@localhost", message);
+		
 		return success;
 	}
 

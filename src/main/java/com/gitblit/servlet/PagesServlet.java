@@ -15,10 +15,23 @@
  */
 package com.gitblit.servlet;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Date;
+
+import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.RevCommit;
+
 import com.gitblit.Constants;
+import com.gitblit.manager.IRepositoryManager;
+import com.gitblit.manager.IRuntimeManager;
+import com.gitblit.utils.JGitUtils;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 
 /**
  * Serves the content of a gh-pages branch.
@@ -26,6 +39,7 @@ import com.gitblit.Constants;
  * @author James Moger
  *
  */
+@Singleton
 public class PagesServlet extends RawServlet {
 
 	private static final long serialVersionUID = 1L;
@@ -44,6 +58,14 @@ public class PagesServlet extends RawServlet {
 			baseURL = baseURL.substring(0, baseURL.length() - 1);
 		}
 		return baseURL + Constants.PAGES + repository + "/" + (path == null ? "" : ("/" + path));
+	}
+
+	@Inject
+	public PagesServlet(
+			IRuntimeManager runtimeManager,
+			IRepositoryManager repositoryManager) {
+
+		super(runtimeManager, repositoryManager);
 	}
 
 	@Override
@@ -72,5 +94,23 @@ public class PagesServlet extends RawServlet {
 	@Override
 	protected void setContentType(HttpServletResponse response, String contentType) {
 		response.setContentType(contentType);;
+	}
+
+	@Override
+	protected boolean streamFromRepo(HttpServletRequest request, HttpServletResponse response, Repository repository,
+			RevCommit commit, String requestedPath) throws IOException {
+
+		response.setDateHeader("Last-Modified", JGitUtils.getCommitDate(commit).getTime());
+		response.setHeader("Cache-Control", "public, max-age=3600, must-revalidate");
+
+		return super.streamFromRepo(request, response, repository, commit, requestedPath);
+	}
+
+	@Override
+	protected void sendContent(HttpServletResponse response, Date date, InputStream is) throws ServletException, IOException {
+		response.setDateHeader("Last-Modified", date.getTime());
+		response.setHeader("Cache-Control", "public, max-age=3600, must-revalidate");
+
+		super.sendContent(response, date, is);
 	}
 }

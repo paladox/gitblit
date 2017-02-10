@@ -17,6 +17,7 @@ package com.gitblit.service;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Properties;
@@ -31,12 +32,14 @@ import javax.mail.Authenticator;
 import javax.mail.Message;
 import javax.mail.MessagingException;
 import javax.mail.PasswordAuthentication;
+import javax.mail.SendFailedException;
 import javax.mail.Session;
 import javax.mail.Transport;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
+import javax.mail.internet.MimeUtility;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -196,7 +199,8 @@ public class MailService implements Runnable {
 			}
 
 			message.setSentDate(new Date());
-			message.setSubject(mailing.subject);
+			// UTF-8 encode
+			message.setSubject(MimeUtility.encodeText(mailing.subject, "utf-8", "B"));
 
 			MimeBodyPart messagePart = new MimeBodyPart();
 			messagePart.setText(mailing.content, "utf-8");
@@ -270,9 +274,22 @@ public class MailService implements Runnable {
 				while ((message = queue.poll()) != null) {
 					try {
 						if (settings.getBoolean(Keys.mail.debug, false)) {
-							logger.info("send: " + StringUtils.trimString(message.getSubject(), 60));
+							logger.info("send: '" + StringUtils.trimString(message.getSubject(), 60)
+									    + "' to:" + StringUtils.trimString(Arrays.toString(message.getAllRecipients()), 300));
 						}
 						Transport.send(message);
+					} catch (SendFailedException sfe) {
+						if (settings.getBoolean(Keys.mail.debug, false)) {
+							logger.error("Failed to send message: {}", sfe.getMessage());
+							logger.info("   Invalid addresses: {}", Arrays.toString(sfe.getInvalidAddresses()));
+							logger.info("   Valid sent addresses: {}", Arrays.toString(sfe.getValidSentAddresses()));
+							logger.info("   Valid unset addresses: {}", Arrays.toString(sfe.getValidUnsentAddresses()));
+							logger.info("", sfe);
+						}
+						else {
+							logger.error("Failed to send message: {}", sfe.getMessage(), sfe.getNextException());
+						}
+						failures.add(message);
 					} catch (Throwable e) {
 						logger.error("Failed to send message", e);
 						failures.add(message);

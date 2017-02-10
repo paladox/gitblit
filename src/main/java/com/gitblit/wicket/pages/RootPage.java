@@ -31,13 +31,16 @@ import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
 import org.apache.wicket.MarkupContainer;
 import org.apache.wicket.PageParameters;
+import org.apache.wicket.RequestCycle;
 import org.apache.wicket.behavior.HeaderContributor;
 import org.apache.wicket.markup.html.IHeaderContributor;
 import org.apache.wicket.markup.html.IHeaderResponse;
 import org.apache.wicket.markup.html.basic.Label;
-import org.apache.wicket.markup.html.form.PasswordTextField;
 import org.apache.wicket.markup.html.form.TextField;
 import org.apache.wicket.markup.html.link.BookmarkablePageLink;
 import org.apache.wicket.markup.html.panel.Fragment;
@@ -46,9 +49,11 @@ import org.apache.wicket.markup.repeater.data.DataView;
 import org.apache.wicket.markup.repeater.data.ListDataProvider;
 import org.apache.wicket.model.IModel;
 import org.apache.wicket.model.Model;
+import org.apache.wicket.protocol.http.WebRequest;
 import org.apache.wicket.protocol.http.WebResponse;
 
 import com.gitblit.Constants;
+import com.gitblit.Constants.AuthenticationType;
 import com.gitblit.Keys;
 import com.gitblit.extensions.NavLinkExtension;
 import com.gitblit.extensions.UserMenuExtension;
@@ -66,9 +71,10 @@ import com.gitblit.models.UserModel;
 import com.gitblit.utils.ModelUtils;
 import com.gitblit.utils.StringUtils;
 import com.gitblit.wicket.GitBlitWebSession;
+import com.gitblit.wicket.NonTrimmedPasswordTextField;
 import com.gitblit.wicket.SessionlessForm;
 import com.gitblit.wicket.WicketUtils;
-import com.gitblit.wicket.panels.GravatarImage;
+import com.gitblit.wicket.panels.AvatarImage;
 import com.gitblit.wicket.panels.LinkPanel;
 import com.gitblit.wicket.panels.NavigationPanel;
 
@@ -146,6 +152,7 @@ public abstract class RootPage extends BasePage {
 		boolean authenticateAdmin = app().settings().getBoolean(Keys.web.authenticateAdminPages, true);
 		boolean allowAdmin = app().settings().getBoolean(Keys.web.allowAdministration, true);
 		boolean allowLucene = app().settings().getBoolean(Keys.web.allowLuceneIndexing, true);
+		boolean displayUserPanel = app().settings().getBoolean(Keys.web.displayUserPanel, true);
 		boolean isLoggedIn = GitBlitWebSession.get().isLoggedIn();
 
 		if (authenticateAdmin) {
@@ -163,7 +170,7 @@ public abstract class RootPage extends BasePage {
 			}
 		}
 
-		if (authenticateView || authenticateAdmin) {
+		if (displayUserPanel && (authenticateView || authenticateAdmin)) {
 			if (isLoggedIn) {
 				UserMenu userFragment = new UserMenu("userPanel", "userMenuFragment", RootPage.this);
 				add(userFragment);
@@ -178,6 +185,11 @@ public abstract class RootPage extends BasePage {
 		// navigation links
 		List<NavLink> navLinks = new ArrayList<NavLink>();
 		if (!authenticateView || (authenticateView && isLoggedIn)) {
+			UserModel user = UserModel.ANONYMOUS;
+			if (isLoggedIn) {
+				user = GitBlitWebSession.get().getUser();
+			}
+
 			navLinks.add(new PageNavLink(isLoggedIn ? "gb.myDashboard" : "gb.dashboard", MyDashboardPage.class,
 					getRootPageParameters()));
 			if (isLoggedIn && app().tickets().isReady()) {
@@ -185,6 +197,9 @@ public abstract class RootPage extends BasePage {
 			}
 			navLinks.add(new PageNavLink("gb.repositories", RepositoriesPage.class,
 					getRootPageParameters()));
+			
+			navLinks.add(new PageNavLink("gb.filestore", FilestorePage.class, getRootPageParameters()));
+				
 			navLinks.add(new PageNavLink("gb.activity", ActivityPage.class, getRootPageParameters()));
 			if (allowLucene) {
 				navLinks.add(new PageNavLink("gb.search", LuceneSearchPage.class));
@@ -192,11 +207,6 @@ public abstract class RootPage extends BasePage {
 
 			if (!authenticateView || (authenticateView && isLoggedIn)) {
 				addDropDownMenus(navLinks);
-			}
-
-			UserModel user = UserModel.ANONYMOUS;
-			if (isLoggedIn) {
-				user = GitBlitWebSession.get().getUser();
 			}
 
 			// add nav link extensions
@@ -261,28 +271,33 @@ public abstract class RootPage extends BasePage {
 
 	private void loginUser(UserModel user) {
 		if (user != null) {
+			HttpServletRequest request = ((WebRequest) getRequest()).getHttpServletRequest();
+			HttpServletResponse response = ((WebResponse) getResponse()).getHttpServletResponse();
+
 			// Set the user into the session
 			GitBlitWebSession session = GitBlitWebSession.get();
+
 			// issue 62: fix session fixation vulnerability
 			session.replaceSession();
 			session.setUser(user);
 
+			request = ((WebRequest) getRequest()).getHttpServletRequest();
+			response = ((WebResponse) getResponse()).getHttpServletResponse();
+			request.getSession().setAttribute(Constants.ATTRIB_AUTHTYPE, AuthenticationType.CREDENTIALS);
+
 			// Set Cookie
-			if (app().settings().getBoolean(Keys.web.allowCookieAuthentication, false)) {
-				WebResponse response = (WebResponse) getRequestCycle().getResponse();
-				app().authentication().setCookie(response.getHttpServletResponse(), user);
-			}
+			app().authentication().setCookie(request, response, user);
 
 			if (!session.continueRequest()) {
 				PageParameters params = getPageParameters();
 				if (params == null) {
 					// redirect to this page
-					setResponsePage(getClass());
+					redirectTo(getClass());
 				} else {
 					// Strip username and password and redirect to this page
 					params.remove("username");
 					params.remove("password");
-					setResponsePage(getClass(), params);
+					redirectTo(getClass(), params);
 				}
 			}
 		}
@@ -554,7 +569,9 @@ public abstract class RootPage extends BasePage {
 					String username = RootPage.this.username.getObject();
 					char[] password = RootPage.this.password.getObject().toCharArray();
 
-					UserModel user = app().authentication().authenticate(username, password);
+					HttpServletRequest request = ((WebRequest)RequestCycle.get().getRequest()).getHttpServletRequest();
+
+					UserModel user = app().authentication().authenticate(username, password, request.getRemoteAddr());
 					if (user == null) {
 						error(getString("gb.invalidUsernameOrPassword"));
 					} else if (user.username.equals(Constants.FEDERATION_USER)) {
@@ -570,7 +587,7 @@ public abstract class RootPage extends BasePage {
 			TextField<String> unameField = new TextField<String>("username", username);
 			WicketUtils.setInputPlaceholder(unameField, markupProvider.getString("gb.username"));
 			loginForm.add(unameField);
-			PasswordTextField pwField = new PasswordTextField("password", password);
+			NonTrimmedPasswordTextField pwField = new NonTrimmedPasswordTextField("password", password);
 			WicketUtils.setInputPlaceholder(pwField, markupProvider.getString("gb.password"));
 			loginForm.add(pwField);
 			add(loginForm);
@@ -596,10 +613,12 @@ public abstract class RootPage extends BasePage {
 			GitBlitWebSession session = GitBlitWebSession.get();
 			UserModel user = session.getUser();
 			boolean editCredentials = app().authentication().supportsCredentialChanges(user);
-			boolean standardLogin = session.authenticationType.isStandard();
+			HttpServletRequest request = ((WebRequest) getRequest()).getHttpServletRequest();
+			AuthenticationType authenticationType = (AuthenticationType) request.getAttribute(Constants.ATTRIB_AUTHTYPE);
+			boolean standardLogin = (null != authenticationType) ? authenticationType.isStandard() : true;
 
 			if (app().settings().getBoolean(Keys.web.allowGravatar, true)) {
-				add(new GravatarImage("username", user, "navbarGravatar", 20, false));
+				add(new AvatarImage("username", user, "navbarGravatar", 20, false));
 			} else {
 				add(new Label("username", user.getDisplayName()));
 			}

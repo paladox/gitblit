@@ -39,6 +39,8 @@ import com.gitblit.tickets.FileTicketService;
 import com.gitblit.tickets.ITicketService;
 import com.gitblit.tickets.RedisTicketService;
 import com.gitblit.utils.StringUtils;
+import com.gitblit.utils.XssFilter;
+import com.gitblit.utils.XssFilter.AllowXssFilter;
 
 /**
  * A command-line tool to move all tickets from one ticket service to another.
@@ -134,7 +136,8 @@ public class MigrateTickets {
 		settings.overrideSetting(Keys.web.activityCacheDays, 0);
 		settings.overrideSetting(ITicketService.SETTING_UPDATE_DIFFSTATS, false);
 
-		IRuntimeManager runtimeManager = new RuntimeManager(settings, baseFolder).start();
+		XssFilter xssFilter = new AllowXssFilter();
+		IRuntimeManager runtimeManager = new RuntimeManager(settings, xssFilter, baseFolder).start();
 		IRepositoryManager repositoryManager = new RepositoryManager(runtimeManager, null, null).start();
 
 		String inputServiceName = settings.getString(Keys.tickets.service, BranchTicketService.class.getSimpleName());
@@ -167,7 +170,7 @@ public class MigrateTickets {
 		long start = System.nanoTime();
 		long totalTickets = 0;
 		long totalChanges = 0;
-		for (RepositoryModel repository : repositoryManager.getRepositoryModels(null)) {
+		for (RepositoryModel repository : repositoryManager.getRepositoryModels()) {
 			Set<Long> ids = inputService.getIds(repository);
 			if (ids == null || ids.isEmpty()) {
 				// nothing to migrate

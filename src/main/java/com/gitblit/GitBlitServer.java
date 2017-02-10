@@ -148,6 +148,15 @@ public class GitBlitServer {
 		System.exit(0);
 	}
 
+	protected File getBaseFolder(Params params) {
+		String path = System.getProperty("GITBLIT_HOME", Params.baseFolder);
+		if (!StringUtils.isEmpty(System.getenv("GITBLIT_HOME"))) {
+			path = System.getenv("GITBLIT_HOME");
+		}
+
+		return new File(path).getAbsoluteFile();
+	}
+
 	/**
 	 * Stop Gitblt GO.
 	 */
@@ -170,7 +179,7 @@ public class GitBlitServer {
 	 * Start Gitblit GO.
 	 */
 	protected final void start(Params params) {
-		final File baseFolder = new File(Params.baseFolder).getAbsoluteFile();
+		final File baseFolder = getBaseFolder(params);
 		FileSettings settings = params.FILESETTINGS;
 		if (!StringUtils.isEmpty(params.settingsfile)) {
 			if (new File(params.settingsfile).exists()) {
@@ -208,22 +217,7 @@ public class GitBlitServer {
 		}
 
 		logger = LoggerFactory.getLogger(GitBlitServer.class);
-		logger.info(Constants.BORDER);
-		logger.info("            _____  _  _    _      _  _  _");
-		logger.info("           |  __ \\(_)| |  | |    | |(_)| |");
-		logger.info("           | |  \\/ _ | |_ | |__  | | _ | |_");
-		logger.info("           | | __ | || __|| '_ \\ | || || __|");
-		logger.info("           | |_\\ \\| || |_ | |_) || || || |_");
-		logger.info("            \\____/|_| \\__||_.__/ |_||_| \\__|");
-		int spacing = (Constants.BORDER.length() - Constants.getGitBlitVersion().length()) / 2;
-		StringBuilder sb = new StringBuilder();
-		while (spacing > 0) {
-			spacing--;
-			sb.append(' ');
-		}
-		logger.info(sb.toString() + Constants.getGitBlitVersion());
-		logger.info("");
-		logger.info(Constants.BORDER);
+		logger.info("\n" + Constants.getASCIIArt());
 
 		System.setProperty("java.awt.headless", "true");
 
@@ -381,7 +375,8 @@ public class GitBlitServer {
 		HashSessionManager sessionManager = new HashSessionManager();
 		sessionManager.setHttpOnly(true);
 		// Use secure cookies if only serving https
-		sessionManager.setSecureRequestOnly(params.port <= 0 && params.securePort > 0);
+		sessionManager.setSecureRequestOnly( (params.port <= 0 && params.securePort > 0) ||
+				(params.port > 0 && params.securePort > 0 && settings.getBoolean(Keys.server.redirectToHttpsPort, true)) );
 		rootContext.getSessionHandler().setSessionManager(sessionManager);
 
 		// Ensure there is a defined User Service
@@ -515,22 +510,25 @@ public class GitBlitServer {
 
 		@Override
 		public void run() {
-			logger.info("Shutdown Monitor listening on port " + socket.getLocalPort());
-			Socket accept;
-			try {
-				accept = socket.accept();
-				BufferedReader reader = new BufferedReader(new InputStreamReader(
-						accept.getInputStream()));
-				reader.readLine();
-				logger.info(Constants.BORDER);
-				logger.info("Stopping " + Constants.NAME);
-				logger.info(Constants.BORDER);
-				server.stop();
-				server.setStopAtShutdown(false);
-				accept.close();
-				socket.close();
-			} catch (Exception e) {
-				logger.warn("Failed to shutdown Jetty", e);
+			// Only run if the socket was able to be created (not already in use, failed to bind, etc.)
+			if (null != socket) {
+				logger.info("Shutdown Monitor listening on port " + socket.getLocalPort());
+				Socket accept;
+				try {
+					accept = socket.accept();
+					BufferedReader reader = new BufferedReader(new InputStreamReader(
+							accept.getInputStream()));
+					reader.readLine();
+					logger.info(Constants.BORDER);
+					logger.info("Stopping " + Constants.NAME);
+					logger.info(Constants.BORDER);
+					server.stop();
+					server.setStopAtShutdown(false);
+					accept.close();
+					socket.close();
+				} catch (Exception e) {
+					logger.warn("Failed to shutdown Jetty", e);
+				}
 			}
 		}
 	}

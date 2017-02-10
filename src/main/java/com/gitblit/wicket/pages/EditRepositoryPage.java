@@ -56,6 +56,7 @@ import com.gitblit.Constants.AccessRestrictionType;
 import com.gitblit.Constants.AuthorizationControl;
 import com.gitblit.Constants.CommitMessageRenderer;
 import com.gitblit.Constants.FederationStrategy;
+import com.gitblit.Constants.MergeType;
 import com.gitblit.Constants.RegistrantType;
 import com.gitblit.GitBlitException;
 import com.gitblit.Keys;
@@ -186,15 +187,18 @@ public class EditRepositoryPage extends RootSubPage {
 
 		// owners palette
 		List<UserChoice> owners = new ArrayList<UserChoice>();
+		List<UserChoice> persons = new ArrayList<UserChoice>();
 		for (String owner : repositoryModel.owners) {
 			UserModel o = app().users().getUserModel(owner);
 			if (o != null) {
 				owners.add(new UserChoice(o.getDisplayName(), o.username, o.emailAddress));
 			} else {
-				owners.add(new UserChoice(owner));
+				UserChoice userChoice = new UserChoice(owner);
+				owners.add(userChoice);
+				persons.add(userChoice);
 			}
 		}
-		List<UserChoice> persons = new ArrayList<UserChoice>();
+
 		for (String person : app().users().getAllUsernames()) {
 			UserModel o = app().users().getUserModel(person);
 			if (o != null) {
@@ -443,7 +447,7 @@ public class EditRepositoryPage extends RootSubPage {
 		form.add(new BooleanOption("acceptNewTickets",
 				getString("gb.acceptNewTickets"),
 				getString("gb.acceptNewTicketsDescription"),
-				new PropertyModel<Boolean>(repositoryModel, "acceptNewPatchsets")));
+				new PropertyModel<Boolean>(repositoryModel, "acceptNewTickets")));
 
 		form.add(new BooleanOption("requireApproval",
 				getString("gb.requireApproval"),
@@ -455,6 +459,11 @@ public class EditRepositoryPage extends RootSubPage {
 				getString("gb.mergeToDescription"),
 				new PropertyModel<String>(repositoryModel, "mergeTo"),
 				availableBranches));
+		form.add(new ChoiceOption<MergeType>("mergeType",
+				getString("gb.mergeType"),
+				getString("gb.mergeTypeDescription"),
+				new PropertyModel<MergeType>(repositoryModel, "mergeType"),
+				Arrays.asList(MergeType.values())));
 
 		//
 		// RECEIVE
@@ -678,7 +687,7 @@ public class EditRepositoryPage extends RootSubPage {
 				RepositoryModel latestModel = app().repositories().getRepositoryModel(repositoryModel.name);
 				boolean canDelete = app().repositories().canDelete(latestModel);
 				if (canDelete) {
-					if (app().repositories().deleteRepositoryModel(latestModel)) {
+					if (app().gitblit().deleteRepositoryModel(latestModel)) {
 						info(MessageFormat.format(getString("gb.repositoryDeleted"), latestModel));
 						if (latestModel.isPersonalRepository()) {
 							// redirect to user's profile page

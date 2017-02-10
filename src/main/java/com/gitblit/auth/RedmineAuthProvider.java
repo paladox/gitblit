@@ -19,12 +19,14 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 
-import org.apache.wicket.util.io.IOUtils;
+import org.apache.commons.io.IOUtils;
 
 import com.gitblit.Constants;
 import com.gitblit.Constants.AccountType;
+import com.gitblit.Constants.Role;
 import com.gitblit.Keys;
 import com.gitblit.auth.AuthenticationProvider.UsernamePasswordAuthenticationProvider;
+import com.gitblit.models.TeamModel;
 import com.gitblit.models.UserModel;
 import com.gitblit.utils.ConnectionUtils;
 import com.gitblit.utils.StringUtils;
@@ -77,6 +79,16 @@ public class RedmineAuthProvider extends UsernamePasswordAuthenticationProvider 
         return false;
     }
 
+    @Override
+    public boolean supportsRoleChanges(UserModel user, Role role) {
+        return true;
+    }
+
+	@Override
+	public boolean supportsRoleChanges(TeamModel team, Role role) {
+		return true;
+	}
+
 	 @Override
 	public AccountType getAccountType() {
 		return AccountType.REDMINE;
@@ -127,7 +139,7 @@ public class RedmineAuthProvider extends UsernamePasswordAuthenticationProvider 
         }
 
         // create a user cookie
-        setCookie(user, password);
+        setCookie(user);
 
         // update user attributes from Redmine
         user.accountType = getAccountType();
@@ -153,15 +165,16 @@ public class RedmineAuthProvider extends UsernamePasswordAuthenticationProvider 
         if (!url.endsWith("/")) {
         	url = url.concat("/");
         }
+        String apiUrl = url + "users/current.json";
+
         HttpURLConnection http;
         if (username == null) {
         	// apikey authentication
         	String apiKey = String.valueOf(password);
-        	String apiUrl = url + "users/current.json?key=" + apiKey;
         	http = (HttpURLConnection) ConnectionUtils.openConnection(apiUrl, null, null);
+            http.addRequestProperty("X-Redmine-API-Key", apiKey);
         } else {
         	// username/password BASIC authentication
-        	String apiUrl = url + "users/current.json";
         	http = (HttpURLConnection) ConnectionUtils.openConnection(apiUrl, username, password);
         }
         http.setRequestMethod("GET");

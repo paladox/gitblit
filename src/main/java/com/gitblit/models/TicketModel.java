@@ -43,6 +43,8 @@ import java.util.regex.Pattern;
 
 import org.eclipse.jgit.util.RelativeDateFormatter;
 
+import com.gitblit.Constants;
+
 /**
  * The Gitblit Ticket model, its component classes, and enums.
  *
@@ -91,6 +93,10 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 
 	public Integer deletions;
 
+	public Priority priority;
+	
+	public Severity severity;
+	
 	/**
 	 * Builds an effective ticket from the collection of changes.  A change may
 	 * Add or Subtract information from a ticket, but the collection of changes
@@ -103,6 +109,31 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		TicketModel ticket;
 		List<Change> effectiveChanges = new ArrayList<Change>();
 		Map<String, Change> comments = new HashMap<String, Change>();
+		Map<String, Change> references = new HashMap<String, Change>();
+		Map<Integer, Integer> latestRevisions = new HashMap<Integer, Integer>();
+		
+		int latestPatchsetNumber = -1;
+		
+		List<Integer> deletedPatchsets = new ArrayList<Integer>();
+		
+		for (Change change : changes) {
+			if (change.patchset != null) {
+				if (change.patchset.isDeleted()) {
+					deletedPatchsets.add(change.patchset.number);
+				} else {
+					Integer latestRev = latestRevisions.get(change.patchset.number);
+					
+					if (latestRev == null || change.patchset.rev > latestRev) {
+						latestRevisions.put(change.patchset.number, change.patchset.rev);
+					}
+					
+					if (change.patchset.number > latestPatchsetNumber) {
+						latestPatchsetNumber = change.patchset.number;
+					}	
+				}
+			}
+		}
+		
 		for (Change change : changes) {
 			if (change.comment != null) {
 				if (comments.containsKey(change.comment.id)) {
@@ -118,6 +149,31 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 					effectiveChanges.add(change);
 					comments.put(change.comment.id, change);
 				}
+			} else if (change.patchset != null) {
+				//All revisions of a deleted patchset are not displayed
+				if (!deletedPatchsets.contains(change.patchset.number)) {
+					
+					Integer latestRev = latestRevisions.get(change.patchset.number);
+					
+					if (    (change.patchset.number < latestPatchsetNumber) 
+						 && (change.patchset.rev == latestRev)) {
+						change.patchset.canDelete = true;
+					}
+					
+					effectiveChanges.add(change);
+				}
+			} else if (change.reference != null){
+				if (references.containsKey(change.reference.toString())) {
+					Change original = references.get(change.reference.toString());
+					Change clone = copy(original);
+					clone.reference.deleted = change.reference.deleted;
+					int idx = effectiveChanges.indexOf(original);
+					effectiveChanges.remove(original);
+					effectiveChanges.add(idx, clone);
+				} else {
+					effectiveChanges.add(change);
+					references.put(change.reference.toString(), change);
+				}
 			} else {
 				effectiveChanges.add(change);
 			}
@@ -126,9 +182,15 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		// effective ticket
 		ticket = new TicketModel();
 		for (Change change : effectiveChanges) {
+			//Ensure deleted items are not included
 			if (!change.hasComment()) {
-				// ensure we do not include a deleted comment
 				change.comment = null;
+			}
+			if (!change.hasReference()) {
+				change.reference = null;
+			}
+			if (!change.hasPatchset()) {
+				change.patchset = null;
 			}
 			ticket.applyChange(change);
 		}
@@ -141,6 +203,8 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		changes = new ArrayList<Change>();
 		status = Status.New;
 		type = Type.defaultType;
+		priority = Priority.defaultPriority;
+		severity = Severity.defaultSeverity;
 	}
 
 	public boolean isOpen() {
@@ -311,6 +375,15 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		return false;
 	}
 
+	public boolean hasReferences() {
+		for (Change change : changes) {
+			if (change.hasReference()) {
+				return true;
+			}
+		}
+		return false;
+	}
+	
 	public List<Attachment> getAttachments() {
 		List<Attachment> list = new ArrayList<Attachment>();
 		for (Change change : changes) {
@@ -321,6 +394,16 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		return list;
 	}
 
+	public List<Reference> getReferences() {
+		List<Reference> list = new ArrayList<Reference>();
+		for (Change change : changes) {
+			if (change.hasReference()) {
+				list.add(change.reference);
+			}
+		}
+		return list;
+	}
+	
 	public List<Patchset> getPatchsets() {
 		List<Patchset> list = new ArrayList<Patchset>();
 		for (Change change : changes) {
@@ -517,6 +600,12 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 				case mergeSha:
 					mergeSha = toString(value);
 					break;
+				case priority:
+					priority = TicketModel.Priority.fromObject(value, priority);
+					break;
+				case severity:
+					severity = TicketModel.Severity.fromObject(value, severity);
+					break;
 				default:
 					// unknown
 					break;
@@ -524,8 +613,12 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 			}
 		}
 
-		// add the change to the ticket
-		changes.add(change);
+		// add real changes to the ticket and ensure deleted changes are removed
+		if (change.isEmptyChange()) {
+			changes.remove(change);
+		} else {
+			changes.add(change);
+		}
 	}
 
 	protected String toString(Object value) {
@@ -596,6 +689,8 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 
 		public Comment comment;
 
+		public Reference reference;
+
 		public Map<Field, String> fields;
 
 		public Set<Attachment> attachments;
@@ -605,6 +700,10 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		public Review review;
 
 		private transient String id;
+
+		//Once links have been made they become a reference on the target ticket
+		//The ticket service handles promoting links to references
+		public transient List<TicketLink> pendingLinks;
 
 		public Change(String author) {
 			this(author, new Date());
@@ -629,7 +728,7 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		}
 
 		public boolean hasPatchset() {
-			return patchset != null;
+			return patchset != null && !patchset.isDeleted();
 		}
 
 		public boolean hasReview() {
@@ -637,18 +736,49 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		}
 
 		public boolean hasComment() {
-			return comment != null && !comment.isDeleted();
+			return comment != null && !comment.isDeleted() && comment.text != null;
+		}
+		
+		public boolean hasReference() {
+			return reference != null && !reference.isDeleted();
+		}
+
+		public boolean hasPendingLinks() {
+			return pendingLinks != null && pendingLinks.size() > 0;
 		}
 
 		public Comment comment(String text) {
 			comment = new Comment(text);
 			comment.id = TicketModel.getSHA1(date.toString() + author + text);
 
+			// parse comment looking for ref #n
+			//TODO: Ideally set via settings
+			String x = "(?:ref|task|issue|bug)?[\\s-]*#(\\d+)";
+
 			try {
-				Pattern mentions = Pattern.compile("\\s@([A-Za-z0-9-_]+)");
+				Pattern p = Pattern.compile(x, Pattern.CASE_INSENSITIVE);
+				Matcher m = p.matcher(text);
+				while (m.find()) {
+					String val = m.group(1);
+					long targetTicketId = Long.parseLong(val);
+					
+					if (targetTicketId > 0) {
+						if (pendingLinks == null) {
+							pendingLinks = new ArrayList<TicketLink>();
+						}
+						
+						pendingLinks.add(new TicketLink(targetTicketId, TicketAction.Comment));
+					}
+				}
+			} catch (Exception e) {
+				// ignore
+			}
+			
+			try {
+				Pattern mentions = Pattern.compile(Constants.REGEX_TICKET_MENTION);
 				Matcher m = mentions.matcher(text);
 				while (m.find()) {
-					String username = m.group(1);
+					String username = m.group("user");
 					plusList(Field.mentions, username);
 				}
 			} catch (Exception e) {
@@ -657,6 +787,16 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 			return comment;
 		}
 
+		public Reference referenceCommit(String commitHash) {
+			reference = new Reference(commitHash);
+			return reference;
+		}
+
+		public Reference referenceTicket(long ticketId, String changeHash) {
+			reference = new Reference(ticketId, changeHash);
+			return reference;
+		}
+		
 		public Review review(Patchset patchset, Score score, boolean addReviewer) {
 			if (addReviewer) {
 				plusList(Field.reviewers, author);
@@ -827,6 +967,17 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 			}
 			return false;
 		}
+		
+		/*
+		 * Identify if this is an empty change. i.e. only an author and date is defined.
+		 * This can occur when items have been deleted
+		 * @returns true if the change is empty
+		 */
+		private boolean isEmptyChange() {
+			return ((comment == null) && (reference == null) && 
+					(fields == null) && (attachments == null) && 
+					(patchset == null) && (review == null));
+		}
 
 		@Override
 		public String toString() {
@@ -836,6 +987,8 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 				sb.append(" commented on by ");
 			} else if (hasPatchset()) {
 				sb.append(MessageFormat.format(" {0} uploaded by ", patchset));
+			} else if (hasReference()) {
+				sb.append(MessageFormat.format(" referenced in {0} by ", reference));
 			} else {
 				sb.append(" changed by ");
 			}
@@ -1021,8 +1174,14 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		public int added;
 		public PatchsetType type;
 
+		public transient boolean canDelete = false;
+
 		public boolean isFF() {
 			return PatchsetType.FastForward == type;
+		}
+
+		public boolean isDeleted() {
+			return PatchsetType.Delete == type;
 		}
 
 		@Override
@@ -1088,6 +1247,114 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 		@Override
 		public String toString() {
 			return text;
+		}
+	}
+	
+	
+	public static enum TicketAction {
+		Commit, Comment, Patchset, Close
+	}
+	
+	//Intentionally not serialized, links are persisted as "references"
+	public static class TicketLink {
+		public long targetTicketId;
+		public String hash;
+		public TicketAction action;
+		public boolean success;
+		public boolean isDelete;
+		
+		public TicketLink(long targetTicketId, TicketAction action) {
+			this.targetTicketId = targetTicketId;
+			this.action = action;
+			success = false;
+			isDelete = false;
+		}
+		
+		public TicketLink(long targetTicketId, TicketAction action, String hash) {
+			this.targetTicketId = targetTicketId;
+			this.action = action;
+			this.hash = hash;
+			success = false;
+			isDelete = false;
+		}
+	}
+	
+	public static enum ReferenceType {
+		Undefined, Commit, Ticket;
+	
+		@Override
+		public String toString() {
+			return name().toLowerCase().replace('_', ' ');
+		}
+		
+		public static ReferenceType fromObject(Object o, ReferenceType defaultType) {
+			if (o instanceof ReferenceType) {
+				// cast and return
+				return (ReferenceType) o;
+			} else if (o instanceof String) {
+				// find by name
+				for (ReferenceType type : values()) {
+					String str = o.toString();
+					if (type.name().equalsIgnoreCase(str)
+							|| type.toString().equalsIgnoreCase(str)) {
+						return type;
+					}
+				}
+			} else if (o instanceof Number) {
+				// by ordinal
+				int id = ((Number) o).intValue();
+				if (id >= 0 && id < values().length) {
+					return values()[id];
+				}
+			}
+
+			return defaultType;
+		}
+	}
+	
+	public static class Reference implements Serializable {
+	
+		private static final long serialVersionUID = 1L;
+		
+		public String hash;
+		public Long ticketId;
+		
+		public Boolean deleted;
+		
+		Reference(String commitHash) {
+			this.hash = commitHash;
+		}
+		
+		Reference(long ticketId, String changeHash) {
+			this.ticketId = ticketId;
+			this.hash = changeHash;
+		}
+		
+		public ReferenceType getSourceType(){
+			if (hash != null) {
+				if (ticketId != null) {
+					return ReferenceType.Ticket;
+				} else {
+					return ReferenceType.Commit;
+				}
+			}
+			
+			return ReferenceType.Undefined;
+		}
+		
+		public boolean isDeleted() {
+			return deleted != null && deleted;
+		}
+		
+		@Override
+		public String toString() {
+			switch (getSourceType()) {
+				case Commit: return hash;
+				case Ticket: return ticketId.toString() + "#" + hash;
+				default: {} break;
+			}
+			
+			return String.format("Unknown Reference Type");
 		}
 	}
 
@@ -1183,16 +1450,16 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 
 	public static enum Field {
 		title, body, responsible, type, status, milestone, mergeSha, mergeTo,
-		topic, labels, watchers, reviewers, voters, mentions;
+		topic, labels, watchers, reviewers, voters, mentions, priority, severity;
 	}
 
 	public static enum Type {
-		Enhancement, Task, Bug, Proposal, Question;
+		Enhancement, Task, Bug, Proposal, Question, Maintenance;
 
 		public static Type defaultType = Task;
 
 		public static Type [] choices() {
-			return new Type [] { Enhancement, Task, Bug, Question };
+			return new Type [] { Enhancement, Task, Bug, Question, Maintenance };
 		}
 
 		@Override
@@ -1226,13 +1493,13 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 	}
 
 	public static enum Status {
-		New, Open, Closed, Resolved, Fixed, Merged, Wontfix, Declined, Duplicate, Invalid, Abandoned, On_Hold;
+		New, Open, Closed, Resolved, Fixed, Merged, Wontfix, Declined, Duplicate, Invalid, Abandoned, On_Hold, No_Change_Required;
 
-		public static Status [] requestWorkflow = { Open, Resolved, Declined, Duplicate, Invalid, Abandoned, On_Hold };
+		public static Status [] requestWorkflow = { Open, Resolved, Declined, Duplicate, Invalid, Abandoned, On_Hold, No_Change_Required };
 
-		public static Status [] bugWorkflow = { Open, Fixed, Wontfix, Duplicate, Invalid, Abandoned, On_Hold };
+		public static Status [] bugWorkflow = { Open, Fixed, Wontfix, Duplicate, Invalid, Abandoned, On_Hold, No_Change_Required };
 
-		public static Status [] proposalWorkflow = { Open, Resolved, Declined, Abandoned, On_Hold };
+		public static Status [] proposalWorkflow = { Open, Resolved, Declined, Abandoned, On_Hold, No_Change_Required };
 
 		public static Status [] milestoneWorkflow = { Open, Closed, Abandoned, On_Hold };
 
@@ -1275,7 +1542,7 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 	}
 
 	public static enum PatchsetType {
-		Proposal, FastForward, Rebase, Squash, Rebase_Squash, Amend;
+		Proposal, FastForward, Rebase, Squash, Rebase_Squash, Amend, Delete;
 
 		public boolean isRewrite() {
 			return (this != FastForward) && (this != Proposal);
@@ -1308,6 +1575,112 @@ public class TicketModel implements Serializable, Comparable<TicketModel> {
 			}
 
 			return null;
+		}
+	}
+
+	public static enum Priority {
+		Low(-1), Normal(0), High(1), Urgent(2);
+
+		public static Priority defaultPriority = Normal;
+
+		final int value;
+
+		Priority(int value) {
+			this.value = value;
+		}
+
+		public int getValue() {
+			return value;
+		}
+		
+		public static Priority [] choices() {
+			return new Priority [] { Urgent, High, Normal, Low };
+		}
+
+		@Override
+		public String toString() {
+			return name().toLowerCase().replace('_', ' ');
+		}
+
+		public static Priority fromObject(Object o, Priority defaultPriority) {
+			if (o instanceof Priority) {
+				// cast and return
+				return (Priority) o;
+			} else if (o instanceof String) {
+				// find by name
+				for (Priority priority : values()) {
+					String str = o.toString();
+					if (priority.name().equalsIgnoreCase(str)
+							|| priority.toString().equalsIgnoreCase(str)) {
+						return priority;
+					}
+				}
+			} else if (o instanceof Number) {
+
+				switch (((Number) o).intValue()) {
+					case -1: return Priority.Low;
+					case 0:  return Priority.Normal;
+					case 1:  return Priority.High;
+					case 2:  return Priority.Urgent;
+					default: return Priority.Normal;
+				}
+			}
+
+			return defaultPriority;
+		}
+	}
+	
+	public static enum Severity {
+		Unrated(-1), Negligible(1), Minor(2), Serious(3), Critical(4), Catastrophic(5);
+
+		public static Severity defaultSeverity = Unrated;
+		
+		final int value;
+		
+		Severity(int value) {
+			this.value = value;
+		}
+
+		public int getValue() {
+			return value;
+		}
+		
+		public static Severity [] choices() {
+			return new Severity [] { Unrated, Negligible, Minor, Serious, Critical, Catastrophic };
+		}
+
+		@Override
+		public String toString() {
+			return name().toLowerCase().replace('_', ' ');
+		}
+		
+		public static Severity fromObject(Object o, Severity defaultSeverity) {
+			if (o instanceof Severity) {
+				// cast and return
+				return (Severity) o;
+			} else if (o instanceof String) {
+				// find by name
+				for (Severity severity : values()) {
+					String str = o.toString();
+					if (severity.name().equalsIgnoreCase(str)
+							|| severity.toString().equalsIgnoreCase(str)) {
+						return severity;
+					}
+				}
+			} else if (o instanceof Number) {
+				
+				switch (((Number) o).intValue()) {
+					case -1: return Severity.Unrated;
+					case 1:  return Severity.Negligible;
+					case 2:  return Severity.Minor;
+					case 3:  return Severity.Serious;
+					case 4:  return Severity.Critical;
+					case 5:  return Severity.Catastrophic;
+					default: return Severity.Unrated;
+				}
+			}
+
+			return defaultSeverity;
 		}
 	}
 }

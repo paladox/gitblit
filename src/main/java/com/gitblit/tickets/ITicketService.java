@@ -36,6 +36,7 @@ import org.slf4j.LoggerFactory;
 import com.gitblit.IStoredSettings;
 import com.gitblit.Keys;
 import com.gitblit.extensions.TicketHook;
+import com.gitblit.manager.IManager;
 import com.gitblit.manager.INotificationManager;
 import com.gitblit.manager.IPluginManager;
 import com.gitblit.manager.IRepositoryManager;
@@ -47,10 +48,13 @@ import com.gitblit.models.TicketModel.Attachment;
 import com.gitblit.models.TicketModel.Change;
 import com.gitblit.models.TicketModel.Field;
 import com.gitblit.models.TicketModel.Patchset;
+import com.gitblit.models.TicketModel.PatchsetType;
 import com.gitblit.models.TicketModel.Status;
+import com.gitblit.models.TicketModel.TicketLink;
 import com.gitblit.tickets.TicketIndexer.Lucene;
 import com.gitblit.utils.DeepCopier;
 import com.gitblit.utils.DiffUtils;
+import com.gitblit.utils.JGitUtils;
 import com.gitblit.utils.DiffUtils.DiffStat;
 import com.gitblit.utils.StringUtils;
 import com.google.common.cache.Cache;
@@ -63,7 +67,7 @@ import com.google.common.cache.CacheBuilder;
  * @author James Moger
  *
  */
-public abstract class ITicketService {
+public abstract class ITicketService implements IManager {
 
 	public static final String SETTING_UPDATE_DIFFSTATS = "migration.updateDiffstats";
 
@@ -176,12 +180,14 @@ public abstract class ITicketService {
 	 * Start the service.
 	 * @since 1.4.0
 	 */
+	@Override
 	public abstract ITicketService start();
 
 	/**
 	 * Stop the service.
 	 * @since 1.4.0
 	 */
+	@Override
 	public final ITicketService stop() {
 		indexer.close();
 		ticketsCache.invalidateAll();
@@ -670,21 +676,24 @@ public abstract class ITicketService {
 		Repository db = null;
 		try {
 			db = repositoryManager.getRepository(repository.name);
-			TicketMilestone milestone = getMilestone(repository, oldName);
+			TicketMilestone tm = getMilestone(repository, oldName);
+			if (tm == null) {
+				return false;
+			}
 			StoredConfig config = db.getConfig();
 			config.unsetSection(MILESTONE, oldName);
-			config.setString(MILESTONE, newName, STATUS, milestone.status.name());
-			config.setString(MILESTONE, newName, COLOR, milestone.color);
-			if (milestone.due != null) {
+			config.setString(MILESTONE, newName, STATUS, tm.status.name());
+			config.setString(MILESTONE, newName, COLOR, tm.color);
+			if (tm.due != null) {
 				config.setString(MILESTONE, newName, DUE,
-						new SimpleDateFormat(DUE_DATE_PATTERN).format(milestone.due));
+						new SimpleDateFormat(DUE_DATE_PATTERN).format(tm.due));
 			}
 			config.save();
 
 			milestonesCache.remove(repository.name);
 
 			TicketNotifier notifier = createNotifier();
-			for (QueryResult qr : milestone.tickets) {
+			for (QueryResult qr : tm.tickets) {
 				Change change = new Change(createdBy);
 				change.setField(Field.milestone, newName);
 				TicketModel ticket = updateTicket(repository, qr.number, change);
@@ -738,6 +747,9 @@ public abstract class ITicketService {
 		Repository db = null;
 		try {
 			TicketMilestone tm = getMilestone(repository, milestone);
+			if (tm == null) {
+				return false;
+			}
 			db = repositoryManager.getRepository(repository.name);
 			StoredConfig config = db.getConfig();
 			config.unsetSection(MILESTONE, milestone);
@@ -1011,12 +1023,12 @@ public abstract class ITicketService {
 	}
 
 	/**
-	 * Updates a ticket.
+	 * Updates a ticket and promotes pending links into references.
 	 *
 	 * @param repository
-	 * @param ticketId
+	 * @param ticketId, or 0 to action pending links in general
 	 * @param change
-	 * @return the ticket model if successful
+	 * @return the ticket model if successful, null if failure or using 0 ticketId
 	 * @since 1.4.0
 	 */
 	public final TicketModel updateTicket(RepositoryModel repository, long ticketId, Change change) {
@@ -1028,28 +1040,78 @@ public abstract class ITicketService {
 			throw new RuntimeException("must specify a change author!");
 		}
 
-		TicketKey key = new TicketKey(repository, ticketId);
-		ticketsCache.invalidate(key);
-
-		boolean success = commitChangeImpl(repository, ticketId, change);
-		if (success) {
-			TicketModel ticket = getTicket(repository, ticketId);
-			ticketsCache.put(key, ticket);
-			indexer.index(ticket);
-
-			// call the ticket hooks
-			if (pluginManager != null) {
-				for (TicketHook hook : pluginManager.getExtensions(TicketHook.class)) {
-					try {
-						hook.onUpdateTicket(ticket, change);
-					} catch (Exception e) {
-						log.error("Failed to execute extension", e);
+		boolean success = true;
+		TicketModel ticket = null;
+		
+		if (ticketId > 0) {
+			TicketKey key = new TicketKey(repository, ticketId);
+			ticketsCache.invalidate(key);
+	
+			success = commitChangeImpl(repository, ticketId, change);
+			
+			if (success) {
+				ticket = getTicket(repository, ticketId);
+				ticketsCache.put(key, ticket);
+				indexer.index(ticket);
+	
+				// call the ticket hooks
+				if (pluginManager != null) {
+					for (TicketHook hook : pluginManager.getExtensions(TicketHook.class)) {
+						try {
+							hook.onUpdateTicket(ticket, change);
+						} catch (Exception e) {
+							log.error("Failed to execute extension", e);
+						}
 					}
 				}
 			}
-			return ticket;
 		}
-		return null;
+		
+		if (success) {
+			//Now that the ticket has been successfully persisted add references to this ticket from linked tickets
+			if (change.hasPendingLinks()) {
+				for (TicketLink link : change.pendingLinks) {
+					TicketModel linkedTicket = getTicket(repository, link.targetTicketId);
+					Change dstChange = null;
+					
+					//Ignore if not available or self reference 
+					if (linkedTicket != null && link.targetTicketId != ticketId) {
+						dstChange = new Change(change.author, change.date);
+						
+						switch (link.action) {
+							case Comment: {
+								if (ticketId == 0) {
+									throw new RuntimeException("must specify a ticket when linking a comment!");
+								}
+								dstChange.referenceTicket(ticketId, change.comment.id);
+							} break;
+							
+							case Commit: {
+								dstChange.referenceCommit(link.hash);
+							} break;
+							
+							default: {
+								throw new RuntimeException(
+										String.format("must add persist logic for link of type %s", link.action));
+							}
+						}
+					}
+					
+					if (dstChange != null) {
+						//If not deleted then remain null in journal
+						if (link.isDelete) {
+							dstChange.reference.deleted = true;
+						}
+
+						if (updateTicket(repository, link.targetTicketId, dstChange) != null) {
+							link.success = true;
+						}
+					}
+				}
+			}
+		}
+		
+		return ticket;
 	}
 
 	/**
@@ -1204,6 +1266,39 @@ public abstract class ITicketService {
 		TicketModel revisedTicket = updateTicket(repository, ticket.number, deletion);
 		return revisedTicket;
 	}
+	
+	/**
+	 * Deletes a patchset from a ticket.
+	 *
+	 * @param ticket
+	 * @param patchset
+	 *            the patchset to delete (should be the highest revision)
+	 * @param userName
+	 * 			the user deleting the commit
+	 * @return the revised ticket if the deletion was successful
+	 * @since 1.8.0
+	 */
+	public final TicketModel deletePatchset(TicketModel ticket, Patchset patchset, String userName) {
+		Change deletion = new Change(userName);
+		deletion.patchset = new Patchset();
+		deletion.patchset.number = patchset.number;
+		deletion.patchset.rev = patchset.rev;
+		deletion.patchset.type = PatchsetType.Delete;
+		//Find and delete references to tickets by the removed commits
+		List<TicketLink> patchsetTicketLinks = JGitUtils.identifyTicketsBetweenCommits(
+				repositoryManager.getRepository(ticket.repository),
+				settings, patchset.base, patchset.tip);
+		
+		for (TicketLink link : patchsetTicketLinks) {
+			link.isDelete = true;
+		}
+		deletion.pendingLinks = patchsetTicketLinks;
+		
+		RepositoryModel repositoryModel = repositoryManager.getRepositoryModel(ticket.repository);
+		TicketModel revisedTicket = updateTicket(repositoryModel, ticket.number, deletion);
+		
+		return revisedTicket;
+	} 
 
 	/**
 	 * Commit a ticket change to the repository.

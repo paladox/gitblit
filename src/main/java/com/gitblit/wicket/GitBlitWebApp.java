@@ -37,15 +37,18 @@ import com.gitblit.Keys;
 import com.gitblit.extensions.GitblitWicketPlugin;
 import com.gitblit.manager.IAuthenticationManager;
 import com.gitblit.manager.IFederationManager;
+import com.gitblit.manager.IFilestoreManager;
 import com.gitblit.manager.IGitblit;
 import com.gitblit.manager.INotificationManager;
 import com.gitblit.manager.IPluginManager;
 import com.gitblit.manager.IProjectManager;
 import com.gitblit.manager.IRepositoryManager;
 import com.gitblit.manager.IRuntimeManager;
+import com.gitblit.manager.IServicesManager;
 import com.gitblit.manager.IUserManager;
 import com.gitblit.tickets.ITicketService;
 import com.gitblit.transport.ssh.IPublicKeyManager;
+import com.gitblit.utils.XssFilter;
 import com.gitblit.wicket.pages.ActivityPage;
 import com.gitblit.wicket.pages.BlamePage;
 import com.gitblit.wicket.pages.BlobDiffPage;
@@ -56,11 +59,13 @@ import com.gitblit.wicket.pages.CommitPage;
 import com.gitblit.wicket.pages.ComparePage;
 import com.gitblit.wicket.pages.DocPage;
 import com.gitblit.wicket.pages.DocsPage;
+import com.gitblit.wicket.pages.EditFilePage;
 import com.gitblit.wicket.pages.EditMilestonePage;
 import com.gitblit.wicket.pages.EditRepositoryPage;
 import com.gitblit.wicket.pages.EditTicketPage;
 import com.gitblit.wicket.pages.ExportTicketPage;
 import com.gitblit.wicket.pages.FederationRegistrationPage;
+import com.gitblit.wicket.pages.FilestorePage;
 import com.gitblit.wicket.pages.ForkPage;
 import com.gitblit.wicket.pages.ForksPage;
 import com.gitblit.wicket.pages.GitSearchPage;
@@ -89,7 +94,11 @@ import com.gitblit.wicket.pages.TicketsPage;
 import com.gitblit.wicket.pages.TreePage;
 import com.gitblit.wicket.pages.UserPage;
 import com.gitblit.wicket.pages.UsersPage;
+import com.google.inject.Inject;
+import com.google.inject.Provider;
+import com.google.inject.Singleton;
 
+@Singleton
 public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 
 	private final Class<? extends WebPage> homePageClass = MyDashboardPage.class;
@@ -98,7 +107,13 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 
 	private final Map<String, CacheControl> cacheablePages = new HashMap<String, CacheControl>();
 
+	private final Provider<IPublicKeyManager> publicKeyManagerProvider;
+
+	private final Provider<ITicketService> ticketServiceProvider;
+
 	private final IStoredSettings settings;
+
+	private final XssFilter xssFilter;
 
 	private final IRuntimeManager runtimeManager;
 
@@ -110,8 +125,6 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 
 	private final IAuthenticationManager authenticationManager;
 
-	private final IPublicKeyManager publicKeyManager;
-
 	private final IRepositoryManager repositoryManager;
 
 	private final IProjectManager projectManager;
@@ -120,30 +133,42 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 
 	private final IGitblit gitblit;
 
+	private final IServicesManager services;
+	
+	private final IFilestoreManager filestoreManager;
+
+	@Inject
 	public GitBlitWebApp(
+			Provider<IPublicKeyManager> publicKeyManagerProvider,
+			Provider<ITicketService> ticketServiceProvider,
 			IRuntimeManager runtimeManager,
 			IPluginManager pluginManager,
 			INotificationManager notificationManager,
 			IUserManager userManager,
 			IAuthenticationManager authenticationManager,
-			IPublicKeyManager publicKeyManager,
 			IRepositoryManager repositoryManager,
 			IProjectManager projectManager,
 			IFederationManager federationManager,
-			IGitblit gitblit) {
+			IGitblit gitblit,
+			IServicesManager services,
+			IFilestoreManager filestoreManager) {
 
 		super();
+		this.publicKeyManagerProvider = publicKeyManagerProvider;
+		this.ticketServiceProvider = ticketServiceProvider;
 		this.settings = runtimeManager.getSettings();
+		this.xssFilter = runtimeManager.getXssFilter();
 		this.runtimeManager = runtimeManager;
 		this.pluginManager = pluginManager;
 		this.notificationManager = notificationManager;
 		this.userManager = userManager;
 		this.authenticationManager = authenticationManager;
-		this.publicKeyManager = publicKeyManager;
 		this.repositoryManager = repositoryManager;
 		this.projectManager = projectManager;
 		this.federationManager = federationManager;
 		this.gitblit = gitblit;
+		this.services = services;
+		this.filestoreManager = filestoreManager;
 	}
 
 	@Override
@@ -171,9 +196,9 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 
 		// setup the standard gitweb-ish urls
 		mount("/repositories", RepositoriesPage.class);
-		mount("/overview", OverviewPage.class, "r", "h");
+		mount("/overview", OverviewPage.class, "r");
 		mount("/summary", SummaryPage.class, "r");
-		mount("/reflog", ReflogPage.class, "r", "h");
+		mount("/reflog", ReflogPage.class, "r");
 		mount("/commits", LogPage.class, "r", "h");
 		mount("/log", LogPage.class, "r", "h");
 		mount("/tags", TagsPage.class, "r");
@@ -204,8 +229,9 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 		mount("/mytickets", MyTicketsPage.class, "r", "h");
 
 		// setup the markup document urls
-		mount("/docs", DocsPage.class, "r");
+		mount("/docs", DocsPage.class, "r", "h");
 		mount("/doc", DocPage.class, "r", "h", "f");
+		mount("/editfile", EditFilePage.class, "r", "h", "f");
 
 		// federation urls
 		mount("/proposal", ReviewProposalPage.class, "t");
@@ -220,6 +246,9 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 		mount("/user", UserPage.class, "user");
 		mount("/forks", ForksPage.class, "r");
 		mount("/fork", ForkPage.class, "r");
+		
+		// filestore URL
+		mount("/filestore", FilestorePage.class);
 
 		// allow started Wicket plugins to initialize
 		for (PluginWrapper pluginWrapper : pluginManager.getPlugins()) {
@@ -251,7 +280,7 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 		if (!settings.getBoolean(Keys.web.mountParameters, true)) {
 			parameters = new String[] {};
 		}
-		mount(new GitblitParamUrlCodingStrategy(settings, location, clazz, parameters));
+		mount(new GitblitParamUrlCodingStrategy(settings, xssFilter, location, clazz, parameters));
 
 		// map the mount point to the cache control definition
 		if (clazz.isAnnotationPresent(CacheControl.class)) {
@@ -305,6 +334,14 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 	@Override
 	public IStoredSettings settings() {
 		return settings;
+	}
+
+	/* (non-Javadoc)
+	 * @see com.gitblit.wicket.Webapp#xssFilter()
+	 */
+	@Override
+	public XssFilter xssFilter() {
+		return xssFilter;
 	}
 
 	/* (non-Javadoc)
@@ -380,7 +417,7 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 	 */
 	@Override
 	public IPublicKeyManager keys() {
-		return publicKeyManager;
+		return publicKeyManagerProvider.get();
 	}
 
 	/* (non-Javadoc)
@@ -416,11 +453,19 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 	}
 
 	/* (non-Javadoc)
+	 * @see com.gitblit.wicket.Webapp#services()
+	 */
+	@Override
+	public IServicesManager services() {
+		return services;
+	}
+
+	/* (non-Javadoc)
 	 * @see com.gitblit.wicket.Webapp#tickets()
 	 */
 	@Override
 	public ITicketService tickets() {
-		return gitblit.getTicketService();
+		return ticketServiceProvider.get();
 	}
 
 	/* (non-Javadoc)
@@ -441,5 +486,10 @@ public class GitBlitWebApp extends WebApplication implements GitblitWicketApp {
 
 	public static GitBlitWebApp get() {
 		return (GitBlitWebApp) WebApplication.get();
+	}
+
+	@Override
+	public IFilestoreManager filestore() {
+		return filestoreManager;
 	}
 }

@@ -70,7 +70,8 @@ public class MarkdownTextArea extends TextArea {
 			return;
 		}
 		String html = MarkdownUtils.transformGFM(GitBlitWebApp.get().settings(), text, repositoryName);
-		previewModel.setObject(html);
+		String safeHtml = GitBlitWebApp.get().xssFilter().relaxed(html);
+		previewModel.setObject(safeHtml);
 	}
 
 	public String getText() {

@@ -8,15 +8,18 @@ import org.apache.wicket.markup.html.WebPage;
 import com.gitblit.IStoredSettings;
 import com.gitblit.manager.IAuthenticationManager;
 import com.gitblit.manager.IFederationManager;
+import com.gitblit.manager.IFilestoreManager;
 import com.gitblit.manager.IGitblit;
 import com.gitblit.manager.INotificationManager;
 import com.gitblit.manager.IPluginManager;
 import com.gitblit.manager.IProjectManager;
 import com.gitblit.manager.IRepositoryManager;
 import com.gitblit.manager.IRuntimeManager;
+import com.gitblit.manager.IServicesManager;
 import com.gitblit.manager.IUserManager;
 import com.gitblit.tickets.ITicketService;
 import com.gitblit.transport.ssh.IPublicKeyManager;
+import com.gitblit.utils.XssFilter;
 
 public interface GitblitWicketApp {
 
@@ -29,6 +32,8 @@ public interface GitblitWicketApp {
 	public abstract CacheControl getCacheControl(String mountPoint);
 
 	public abstract IStoredSettings settings();
+
+	public abstract XssFilter xssFilter();
 
 	/**
 	 * Is Gitblit running in debug mode?
@@ -65,8 +70,12 @@ public interface GitblitWicketApp {
 
 	public abstract IGitblit gitblit();
 
+	public abstract IServicesManager services();
+
 	public abstract ITicketService tickets();
 
 	public abstract TimeZone getTimezone();
+	
+	public abstract IFilestoreManager filestore();
 
 }

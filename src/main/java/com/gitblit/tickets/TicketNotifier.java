@@ -135,6 +135,7 @@ public class TicketNotifier {
 			StringBuilder html = new StringBuilder();
 			html.append("<head>");
 			html.append(readStyle());
+			html.append(readViewTicketAction(ticket));
 			html.append("</head>");
 			html.append("<body>");
 			html.append(MarkdownUtils.transformGFM(settings, markdown, ticket.repository));
@@ -316,6 +317,19 @@ public class TicketNotifier {
 			// comment update
 			sb.append(MessageFormat.format("**{0}** commented on this ticket.", user.getDisplayName()));
 			sb.append(HARD_BRK);
+		} else if (lastChange.hasReference()) {
+			// reference update
+			String type = "?";
+
+			switch (lastChange.reference.getSourceType()) {
+				case Commit: { type = "commit"; } break;
+				case Ticket: { type = "ticket"; } break;
+				default: { } break;
+			}
+				
+			sb.append(MessageFormat.format("**{0}** referenced this ticket in {1} {2}", type, lastChange.toString())); 
+			sb.append(HARD_BRK);
+			
 		} else {
 			// general update
 			pattern = "**{0}** has updated this ticket.";
@@ -559,10 +573,10 @@ public class TicketNotifier {
 		// cc users mentioned in last comment
 		Change lastChange = ticket.changes.get(ticket.changes.size() - 1);
 		if (lastChange.hasComment()) {
-			Pattern p = Pattern.compile("\\s@([A-Za-z0-9-_]+)");
+			Pattern p = Pattern.compile(Constants.REGEX_TICKET_MENTION);
 			Matcher m = p.matcher(lastChange.comment.text);
 			while (m.find()) {
-				String username = m.group();
+				String username = m.group("user");
 				ccs.add(username);
 			}
 		}
@@ -596,7 +610,7 @@ public class TicketNotifier {
 
 		// respect the author's email preference
 		UserModel lastAuthor = userManager.getUserModel(lastChange.author);
-		if (!lastAuthor.getPreferences().isEmailMeOnMyTicketChanges()) {
+		if (lastAuthor != null && !lastAuthor.getPreferences().isEmailMeOnMyTicketChanges()) {
 			toAddresses.remove(lastAuthor.emailAddress);
 			ccAddresses.remove(lastAuthor.emailAddress);
 		}
@@ -611,6 +625,12 @@ public class TicketNotifier {
 		sb.append(readResource("email.css"));
 		sb.append("</style>\n");
 		return sb.toString();
+	}
+
+	protected String readViewTicketAction(TicketModel ticket) {
+		String action = readResource("viewTicket.html");
+		action = action.replace("${url}", ticketService.getTicketUrl(ticket));
+		return action;
 	}
 
 	protected String readResource(String resource) {

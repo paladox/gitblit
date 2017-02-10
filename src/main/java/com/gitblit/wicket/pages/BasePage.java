@@ -42,9 +42,12 @@ import org.apache.wicket.markup.html.CSSPackageResource;
 import org.apache.wicket.markup.html.basic.Label;
 import org.apache.wicket.markup.html.link.ExternalLink;
 import org.apache.wicket.markup.html.panel.FeedbackPanel;
+import org.apache.wicket.markup.html.resources.JavascriptResourceReference;
+import org.apache.wicket.markup.repeater.RepeatingView;
 import org.apache.wicket.protocol.http.RequestUtils;
 import org.apache.wicket.protocol.http.WebResponse;
 import org.apache.wicket.protocol.http.servlet.ServletWebRequest;
+import org.apache.wicket.request.target.basic.RedirectRequestTarget;
 import org.apache.wicket.util.time.Duration;
 import org.apache.wicket.util.time.Time;
 import org.slf4j.Logger;
@@ -112,6 +115,15 @@ public abstract class BasePage extends SessionPage {
 		return canonicalUrl;
 	}
 
+	protected void redirectTo(Class<? extends BasePage> pageClass) {
+		redirectTo(pageClass, null);
+	}
+
+	protected void redirectTo(Class<? extends BasePage> pageClass, PageParameters parameters) {
+		String absoluteUrl = getCanonicalUrl(pageClass, parameters);
+		getRequestCycle().setRequestTarget(new RedirectRequestTarget(absoluteUrl));
+	}
+
 	protected String getLanguageCode() {
 		return GitBlitWebSession.get().getLocale().getLanguage();
 	}
@@ -166,6 +178,9 @@ public abstract class BasePage extends SessionPage {
 			// use default Wicket caching behavior
 			super.setHeaders(response);
 		}
+
+		// XRF vulnerability. issue-500 / ticket-166
+		response.setHeader("X-Frame-Options", "SAMEORIGIN");
 	}
 
 	/**
@@ -229,7 +244,7 @@ public abstract class BasePage extends SessionPage {
 
 	protected void setupPage(String repositoryName, String pageName) {
 		add(new Label("title", getPageTitle(repositoryName)));
-
+		getBottomScriptContainer();
 		String rootLinkUrl = app().settings().getString(Keys.web.rootLink, urlFor(GitBlitWebApp.get().getHomePage(), null).toString());
 		ExternalLink rootLink = new ExternalLink("rootLink", rootLinkUrl);
 		WicketUtils.setHtmlTooltip(rootLink, app().settings().getString(Keys.web.siteName, Constants.NAME));
@@ -492,4 +507,41 @@ public abstract class BasePage extends SessionPage {
 		}
 		return sb.toString();
 	}
+
+	private RepeatingView getBottomScriptContainer() {
+		RepeatingView bottomScriptContainer = (RepeatingView) get("bottomScripts");
+		if (bottomScriptContainer == null) {
+			bottomScriptContainer = new RepeatingView("bottomScripts");
+			bottomScriptContainer.setRenderBodyOnly(true);
+			add(bottomScriptContainer);
+		}
+		return bottomScriptContainer;
+	}
+
+	/**
+	 * Adds a HTML script element loading the javascript designated by the given path.
+	 *
+	 * @param scriptPath
+	 *            page-relative path to the Javascript resource; normally starts with "scripts/"
+	 */
+	protected void addBottomScript(String scriptPath) {
+		RepeatingView bottomScripts = getBottomScriptContainer();
+		Label script = new Label(bottomScripts.newChildId(), "<script type='text/javascript' src='"
+				+ urlFor(new JavascriptResourceReference(this.getClass(), scriptPath)) + "'></script>\n");
+		bottomScripts.add(script.setEscapeModelStrings(false).setRenderBodyOnly(true));
+	}
+
+	/**
+	 * Adds a HTML script element containing the given code.
+	 *
+	 * @param code
+	 *            inline script code
+	 */
+	protected void addBottomScriptInline(String code) {
+		RepeatingView bottomScripts = getBottomScriptContainer();
+		Label script = new Label(bottomScripts.newChildId(),
+				"<script type='text/javascript'>/*<![CDATA[*/\n" + code + "\n//]]>\n</script>\n");
+		bottomScripts.add(script.setEscapeModelStrings(false).setRenderBodyOnly(true));
+	}
+
 }

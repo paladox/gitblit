@@ -36,6 +36,8 @@ import com.gitblit.models.Mailing;
 import com.gitblit.service.FederationPullService;
 import com.gitblit.utils.FederationUtils;
 import com.gitblit.utils.StringUtils;
+import com.gitblit.utils.XssFilter;
+import com.gitblit.utils.XssFilter.AllowXssFilter;
 
 /**
  * Command-line client to pull federated Gitblit repositories.
@@ -92,12 +94,13 @@ public class FederationClient {
 		}
 
 		// configure the Gitblit singleton for minimal, non-server operation
-		RuntimeManager runtime = new RuntimeManager(settings, baseFolder).start();
+		XssFilter xssFilter = new AllowXssFilter();
+		RuntimeManager runtime = new RuntimeManager(settings, xssFilter, baseFolder).start();
 		NoopNotificationManager notifications = new NoopNotificationManager().start();
 		UserManager users = new UserManager(runtime, null).start();
 		RepositoryManager repositories = new RepositoryManager(runtime, null, users).start();
 		FederationManager federation = new FederationManager(runtime, notifications, repositories).start();
-		IGitblit gitblit = new GitblitManager(runtime, null, notifications, users, null, null, repositories, null, federation);
+		IGitblit gitblit = new GitblitManager(null, null, runtime, null, notifications, users, null, repositories, null, federation, null);
 
 		FederationPullService puller = new FederationPullService(gitblit, federation.getFederationRegistrations()) {
 			@Override

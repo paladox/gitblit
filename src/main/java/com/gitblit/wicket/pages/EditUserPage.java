@@ -20,27 +20,31 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.wicket.PageParameters;
 import org.apache.wicket.behavior.SimpleAttributeModifier;
 import org.apache.wicket.extensions.markup.html.form.palette.Palette;
 import org.apache.wicket.markup.html.form.Button;
 import org.apache.wicket.markup.html.form.CheckBox;
+import org.apache.wicket.markup.html.form.DropDownChoice;
 import org.apache.wicket.markup.html.form.Form;
-import org.apache.wicket.markup.html.form.PasswordTextField;
 import org.apache.wicket.markup.html.form.TextField;
 import org.apache.wicket.model.CompoundPropertyModel;
+import org.apache.wicket.model.IModel;
 import org.apache.wicket.model.Model;
 import org.apache.wicket.model.util.CollectionModel;
 import org.apache.wicket.model.util.ListModel;
 
 import com.gitblit.Constants.RegistrantType;
+import com.gitblit.Constants.Role;
 import com.gitblit.GitBlitException;
 import com.gitblit.Keys;
 import com.gitblit.models.RegistrantAccessPermission;
 import com.gitblit.models.TeamModel;
 import com.gitblit.models.UserModel;
 import com.gitblit.utils.StringUtils;
+import com.gitblit.wicket.NonTrimmedPasswordTextField;
 import com.gitblit.wicket.RequiresAdminRole;
 import com.gitblit.wicket.StringChoiceRenderer;
 import com.gitblit.wicket.WicketUtils;
@@ -107,6 +111,30 @@ public class EditUserPage extends RootSubPage {
 		final Palette<String> teams = new Palette<String>("teams", new ListModel<String>(
 				new ArrayList<String>(userTeams)), new CollectionModel<String>(app().users()
 				.getAllTeamNames()), new StringChoiceRenderer(), 10, false);
+		Locale locale = userModel.getPreferences().getLocale();
+		if (locale == null) {
+			locale = Locale.ENGLISH;
+		}
+
+		List<Language> languages = UserPage.getLanguages();
+		Language preferredLanguage = null;
+		if (locale != null) {
+			String localeCode = locale.getLanguage();
+			if (!StringUtils.isEmpty(locale.getCountry())) {
+				localeCode += "_" + locale.getCountry();
+			}
+
+			for (Language lang : languages) {
+				if (lang.code.equals(localeCode)) {
+					// language_COUNTRY match
+					preferredLanguage = lang;
+				} else if (preferredLanguage != null && lang.code.startsWith(locale.getLanguage())) {
+					// language match
+					preferredLanguage = lang;
+				}
+			}
+		}
+		final IModel<Language> language = Model.of(preferredLanguage);		
 		Form<UserModel> form = new Form<UserModel>("editForm", model) {
 
 			private static final long serialVersionUID = 1L;
@@ -121,6 +149,10 @@ public class EditUserPage extends RootSubPage {
 				if (StringUtils.isEmpty(userModel.username)) {
 					error(getString("gb.pleaseSetUsername"));
 					return;
+				}
+				Language lang = language.getObject();
+				if (lang != null) {
+					userModel.getPreferences().setLocale(lang.code);
 				}
 				// force username to lower-case
 				userModel.username = userModel.username.toLowerCase();
@@ -155,7 +187,7 @@ public class EditUserPage extends RootSubPage {
 						}
 
 						// change the cookie
-						userModel.cookie = StringUtils.getSHA1(userModel.username + password);
+						userModel.cookie = userModel.createCookie();
 
 						// Optionally store the password MD5 digest.
 						String type = app().settings().getString(Keys.realm.passwordStorage, "md5");
@@ -177,7 +209,9 @@ public class EditUserPage extends RootSubPage {
 
 				// update user permissions
 				for (RegistrantAccessPermission repositoryPermission : permissions) {
-					userModel.setRepositoryPermission(repositoryPermission.registrant, repositoryPermission.permission);
+					if (repositoryPermission.mutable) {
+						userModel.setRepositoryPermission(repositoryPermission.registrant, repositoryPermission.permission);
+					}
 				}
 
 				Iterator<String> selectedTeams = teams.getSelectedChoices();
@@ -216,32 +250,67 @@ public class EditUserPage extends RootSubPage {
 		// do not let the browser pre-populate these fields
 		form.add(new SimpleAttributeModifier("autocomplete", "off"));
 
-		// not all user services support manipulating username and password
+		// not all user providers support manipulating username and password
 		boolean editCredentials = app().authentication().supportsCredentialChanges(userModel);
 
-		// not all user services support manipulating display name
+		// not all user providers support manipulating display name
 		boolean editDisplayName = app().authentication().supportsDisplayNameChanges(userModel);
 
-		// not all user services support manipulating email address
+		// not all user providers support manipulating email address
 		boolean editEmailAddress = app().authentication().supportsEmailAddressChanges(userModel);
 
-		// not all user services support manipulating team memberships
+		// not all user providers support manipulating team memberships
 		boolean editTeams = app().authentication().supportsTeamMembershipChanges(userModel);
+
+		// not all user providers support manipulating the admin role
+		boolean changeAdminRole = app().authentication().supportsRoleChanges(userModel, Role.ADMIN);
+
+		// not all user providers support manipulating the create role
+		boolean changeCreateRole = app().authentication().supportsRoleChanges(userModel, Role.CREATE);
+
+		// not all user providers support manipulating the fork role
+		boolean changeForkRole = app().authentication().supportsRoleChanges(userModel, Role.FORK);
 
 		// field names reflective match UserModel fields
 		form.add(new TextField<String>("username").setEnabled(editCredentials));
-		PasswordTextField passwordField = new PasswordTextField("password");
+		NonTrimmedPasswordTextField passwordField = new NonTrimmedPasswordTextField("password");
 		passwordField.setResetPassword(false);
 		form.add(passwordField.setEnabled(editCredentials));
-		PasswordTextField confirmPasswordField = new PasswordTextField("confirmPassword",
+		NonTrimmedPasswordTextField confirmPasswordField = new NonTrimmedPasswordTextField("confirmPassword",
 				confirmPassword);
 		confirmPasswordField.setResetPassword(false);
 		form.add(confirmPasswordField.setEnabled(editCredentials));
 		form.add(new TextField<String>("displayName").setEnabled(editDisplayName));
 		form.add(new TextField<String>("emailAddress").setEnabled(editEmailAddress));
-		form.add(new CheckBox("canAdmin"));
-		form.add(new CheckBox("canFork").setEnabled(app().settings().getBoolean(Keys.web.allowForking, true)));
-		form.add(new CheckBox("canCreate"));
+		
+
+		DropDownChoice<Language> choice = new DropDownChoice<Language>("language",language,languages	);
+		form.add( choice.setEnabled(languages.size()>0) );
+		if (userModel.canAdmin() && !userModel.canAdmin) {
+			// user inherits Admin permission
+			// display a disabled-yet-checked checkbox
+			form.add(new CheckBox("canAdmin", Model.of(true)).setEnabled(false));
+		} else {
+			form.add(new CheckBox("canAdmin").setEnabled(changeAdminRole));
+		}
+
+		if (userModel.canFork() && !userModel.canFork) {
+			// user inherits Fork permission
+			// display a disabled-yet-checked checkbox
+			form.add(new CheckBox("canFork", Model.of(true)).setEnabled(false));
+		} else {
+			final boolean forkingAllowed = app().settings().getBoolean(Keys.web.allowForking, true);
+			form.add(new CheckBox("canFork").setEnabled(forkingAllowed && changeForkRole));
+		}
+
+		if (userModel.canCreate() && !userModel.canCreate) {
+			// user inherits Create permission
+			// display a disabled-yet-checked checkbox
+			form.add(new CheckBox("canCreate", Model.of(true)).setEnabled(false));
+		} else {
+			form.add(new CheckBox("canCreate").setEnabled(changeCreateRole));
+		}
+
 		form.add(new CheckBox("excludeFromFederation"));
 		form.add(new CheckBox("disabled"));
 
